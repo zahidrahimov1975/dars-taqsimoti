@@ -1,0 +1,37 @@
+name: Build Windows EXE
+
+# Runs automatically on every upload to the repo, and can also be
+# started by hand from the Actions tab (the "Run workflow" button).
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest          # a free Microsoft-hosted Windows machine
+    steps:
+      - name: Get the code
+        uses: actions/checkout@v4
+
+      - name: Install Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install the build tool
+        run: pip install pyinstaller
+
+      - name: Build the .exe
+        run: pyinstaller --onefile --windowed --name DarsTaqsimoti app.py
+
+      - name: Put the database next to the .exe
+        shell: pwsh
+        run: |
+          if (Test-Path dars_taqsimoti.db) { Copy-Item dars_taqsimoti.db dist/ }
+
+      - name: Publish the result for download
+        uses: actions/upload-artifact@v4
+        with:
+          name: DarsTaqsimoti-windows
+          path: dist
