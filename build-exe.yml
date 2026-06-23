@@ -12,10 +12,10 @@ jobs:
     runs-on: windows-latest          # a free Microsoft-hosted Windows machine
     steps:
       - name: Get the code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Install Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.12"
 
@@ -31,7 +31,7 @@ jobs:
           if (Test-Path dars_taqsimoti.db) { Copy-Item dars_taqsimoti.db dist/ }
 
       - name: Publish the result for download
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: DarsTaqsimoti-windows
           path: dist
