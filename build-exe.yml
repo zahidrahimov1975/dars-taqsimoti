@@ -25,11 +25,8 @@ jobs:
       - name: Build the .exe
         run: pyinstaller --onefile --windowed --name DarsTaqsimoti app.py
 
-      - name: Put the database next to the .exe
-        shell: pwsh
-        run: |
-          if (Test-Path dars_taqsimoti.db) { Copy-Item dars_taqsimoti.db dist/ }
-
+      # No database is shipped on purpose — the app creates an empty
+      # dars_taqsimoti.db next to the .exe the first time it runs.
       - name: Publish the result for download
         uses: actions/upload-artifact@v6
         with:
