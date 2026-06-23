@@ -2,8 +2,7 @@
 # -*- coding: utf-8 -*-
 """
 Dars taqsimoti / O'qituvchilar yuklamasi — mustaqil dastur.
-Standalone teaching-load (workload) planner. Rebuilt from a Microsoft Access
-application into a self-contained Python program (stdlib only: tkinter + sqlite3).
+Standalone teaching-load (workload) planner. Stdlib only: tkinter + sqlite3.
 
 Build into a Windows .exe with:
     pip install pyinstaller
@@ -25,9 +24,10 @@ DB_NAME = "dars_taqsimoti.db"
 UNVON = ["DSc", "PhD", "Darajasiz"]
 KATEGORIYA = ["1", "2"]
 YONALISH = ["Buxgalteriya Hisobi", "Iqtisodiyot", "Biznesni Boshqarish"]
-TALIM_TURI = ["Kunduzgi", "Kechki", "Masofaviy", "Sirtqi"]
-TUR_SOAT = ["Maruza", "Amaliyot"]
+TALIM_TURI = ["Kunduzgi", "Sirtqi", "Masofaviy", "Kechki"]
+TUR_SOAT = ["Maruza", "Amaliyot"]                # + "Reyting" only when subject is Masofaviy
 SEMESTR = [str(i) for i in range(1, 13)]
+ALL = "— hammasi —"
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS Domlalar(
@@ -48,7 +48,6 @@ CREATE TABLE IF NOT EXISTS Taqsimot(
 
 
 def db_path():
-    """Keep the database next to the executable (or the script when not frozen)."""
     if getattr(sys, "frozen", False):
         base = os.path.dirname(sys.executable)
     else:
@@ -64,11 +63,11 @@ def connect(path=None):
     return con
 
 
-# ----- Computed values (these were the empty 'Jami' columns in Access) -----
+# ----- Computed values (the empty 'Jami' columns in Access) -----
 def fan_totals(maruza, amaliyot, potok, guruh, reyting):
-    maruza_jami = (maruza or 0) * (potok or 0)
-    amaliyot_jami = (amaliyot or 0) * (guruh or 0)
-    return maruza_jami, amaliyot_jami, maruza_jami + amaliyot_jami + (reyting or 0)
+    mj = (maruza or 0) * (potok or 0)
+    aj = (amaliyot or 0) * (guruh or 0)
+    return mj, aj, mj + aj + (reyting or 0)
 
 
 def meyor_jami(meyor1st, stavka):
@@ -76,11 +75,11 @@ def meyor_jami(meyor1st, stavka):
 
 
 def workload_rows(con):
-    """Per-teacher assigned hours vs norm — the core of the 'Yuklama' report."""
     sql = """
     SELECT d.DomlaID, d.FIO, d.Stavka, d.Meyor1St,
            COALESCE(SUM(CASE WHEN t.TurSoat='Maruza'   THEN t.Soat END),0) AS maruza,
            COALESCE(SUM(CASE WHEN t.TurSoat='Amaliyot' THEN t.Soat END),0) AS amaliyot,
+           COALESCE(SUM(CASE WHEN t.TurSoat='Reyting'  THEN t.Soat END),0) AS reyting,
            COALESCE(SUM(t.Soat),0) AS jami
     FROM Domlalar d LEFT JOIN Taqsimot t ON t.DomlaID = d.DomlaID
     GROUP BY d.DomlaID ORDER BY d.FIO COLLATE NOCASE"""
@@ -89,16 +88,13 @@ def workload_rows(con):
         norm = meyor_jami(r["Meyor1St"], r["Stavka"])
         diff = r["jami"] - norm
         pct = (r["jami"] / norm * 100) if norm else 0
-        out.append({
-            "id": r["DomlaID"], "fio": r["FIO"], "stavka": r["Stavka"],
-            "norm": norm, "maruza": r["maruza"], "amaliyot": r["amaliyot"],
-            "jami": r["jami"], "diff": diff, "pct": pct,
-        })
+        out.append({"id": r["DomlaID"], "fio": r["FIO"], "stavka": r["Stavka"],
+                    "norm": norm, "maruza": r["maruza"], "amaliyot": r["amaliyot"],
+                    "reyting": r["reyting"], "jami": r["jami"], "diff": diff, "pct": pct})
     return out
 
 
 def g(v):
-    """Format a number without trailing .0 (e.g. 30.0 -> '30')."""
     try:
         f = float(v)
         return str(int(f)) if f == int(f) else f"{f:g}"
@@ -106,14 +102,15 @@ def g(v):
         return "" if v is None else str(v)
 
 
-# ===================== Add / Edit dialog =====================
+def short_name(fio):
+    """Familiya Ism only (first two name parts)."""
+    parts = (fio or "").split()
+    return " ".join(parts[:2]) if parts else (fio or "")
+
+
+# ===================== Generic Add/Edit dialog (Domlalar, Fanlar) =====================
 class FormDialog(tk.Toplevel):
-    """Generic modal form built from a field spec.
-    spec item: (key, label, kind, options)
-      kind in {'text','int','float','combo','readonly'}
-      options: list for combos; for combo, editable=True unless key in fixed set
-    """
-    FIXED = {"IlmiyUnvon", "Kategoriya", "TurSoat", "Semestr"}
+    FIXED = {"IlmiyUnvon", "Kategoriya", "Semestr"}
 
     def __init__(self, master, title, spec, values=None, computed=None):
         super().__init__(master)
@@ -122,7 +119,7 @@ class FormDialog(tk.Toplevel):
         self.result = None
         self.spec = spec
         self.vars = {}
-        self.computed = computed  # optional callable(dict)->str for a live preview
+        self.computed = computed
         values = values or {}
 
         frm = ttk.Frame(self, padding=16)
@@ -134,8 +131,6 @@ class FormDialog(tk.Toplevel):
             if kind == "combo":
                 state = "readonly" if key in self.FIXED else "normal"
                 w = ttk.Combobox(frm, textvariable=var, values=opts, state=state, width=28)
-            elif kind == "readonly":
-                w = ttk.Entry(frm, textvariable=var, width=30, state="readonly")
             else:
                 w = ttk.Entry(frm, textvariable=var, width=30)
             w.grid(row=i, column=1, sticky="ew", pady=4)
@@ -158,7 +153,6 @@ class FormDialog(tk.Toplevel):
         self.transient(master)
         self.grab_set()
         self.update_idletasks()
-        # centre over parent
         x = master.winfo_rootx() + (master.winfo_width() - self.winfo_width()) // 2
         y = master.winfo_rooty() + (master.winfo_height() - self.winfo_height()) // 3
         self.geometry(f"+{max(x,0)}+{max(y,0)}")
@@ -172,8 +166,6 @@ class FormDialog(tk.Toplevel):
                 out[key] = int(float(raw)) if raw else 0
             elif kind == "float":
                 out[key] = float(raw.replace(",", ".")) if raw else 0.0
-            elif kind == "readonly":
-                continue
             else:
                 out[key] = raw
         return out
@@ -192,13 +184,211 @@ class FormDialog(tk.Toplevel):
         except ValueError:
             messagebox.showerror("Xato", "Raqamli maydonlarni to'g'ri kiriting.", parent=self)
             return
-        # required text field is the first 'text'/'combo' field
-        for key, label, kind, opts in self.spec:
-            if kind in ("text",) and not data.get(key):
-                messagebox.showerror("Xato", f"\"{label}\" maydoni bo'sh bo'lmasligi kerak.", parent=self)
-                return
-            break
+        first = self.spec[0]
+        if first[2] == "text" and not data.get(first[0]):
+            messagebox.showerror("Xato", f"\"{first[1]}\" maydoni bo'sh bo'lmasligi kerak.", parent=self)
+            return
         self.result = data
+        self.destroy()
+
+
+# ===================== Taqsimot assignment dialog (like the Access 'Domla yuklamasi' form) =====================
+class TaqsimotDialog(tk.Toplevel):
+    def __init__(self, master, con, values=None):
+        super().__init__(master)
+        self.title("Taqsimot yozuvi — Domla yuklamasi")
+        self.resizable(False, False)
+        self.con = con
+        self.result = None
+
+        self.domlalar = con.execute(
+            "SELECT DomlaID, FIO FROM Domlalar ORDER BY FIO COLLATE NOCASE").fetchall()
+        self.fanlar = con.execute(
+            "SELECT FanID, FanNomi, Yonalish, TalimTuri, Semestr, Maruza, Amaliyot, Reyting "
+            "FROM Fanlar ORDER BY FanNomi COLLATE NOCASE").fetchall()
+        self.domla_ids = [r["DomlaID"] for r in self.domlalar]
+        self.fan_filtered = []
+
+        pad = dict(padx=6, pady=5)
+        frm = ttk.Frame(self, padding=16)
+        frm.grid()
+        ttk.Label(frm, text="DOMLA YUKLAMASI — DARS TAQSIMOTI",
+                  style="Title.TLabel").grid(row=0, column=0, columnspan=4, sticky="w", pady=(0, 12))
+
+        ttk.Label(frm, text="Domla:").grid(row=1, column=0, sticky="w", **pad)
+        self.cb_domla = ttk.Combobox(frm, state="readonly", width=46,
+                                     values=[short_name(r["FIO"]) for r in self.domlalar])
+        self.cb_domla.grid(row=1, column=1, columnspan=3, sticky="we", **pad)
+
+        ttk.Label(frm, text="— Fan tanlash (filtrlar ixtiyoriy) —",
+                  foreground="#666").grid(row=2, column=0, columnspan=4, sticky="w", pady=(12, 0))
+
+        ttk.Label(frm, text="Yo'nalish:").grid(row=3, column=0, sticky="w", **pad)
+        self.cb_yon = ttk.Combobox(frm, state="readonly", width=22, values=[ALL] + self._distinct("Yonalish"))
+        self.cb_yon.grid(row=3, column=1, sticky="we", **pad)
+        ttk.Label(frm, text="Ta'lim shakli:").grid(row=3, column=2, sticky="w", **pad)
+        self.cb_talim = ttk.Combobox(frm, state="readonly", width=16, values=[ALL] + TALIM_TURI)
+        self.cb_talim.grid(row=3, column=3, sticky="we", **pad)
+
+        ttk.Label(frm, text="Semestr:").grid(row=4, column=0, sticky="w", **pad)
+        self.cb_sem = ttk.Combobox(frm, state="readonly", width=10, values=[ALL] + self._distinct_sem())
+        self.cb_sem.grid(row=4, column=1, sticky="w", **pad)
+
+        ttk.Label(frm, text="Fan:").grid(row=5, column=0, sticky="w", **pad)
+        self.cb_fan = ttk.Combobox(frm, state="readonly", width=46)
+        self.cb_fan.grid(row=5, column=1, columnspan=3, sticky="we", **pad)
+
+        ttk.Label(frm, text="Soat turi:").grid(row=6, column=0, sticky="w", **pad)
+        self.cb_turi = ttk.Combobox(frm, state="readonly", width=16, values=list(TUR_SOAT))
+        self.cb_turi.grid(row=6, column=1, sticky="w", **pad)
+
+        ttk.Label(frm, text="Soat:").grid(row=7, column=0, sticky="w", **pad)
+        self.var_soat = tk.StringVar()
+        ttk.Entry(frm, textvariable=self.var_soat, width=12).grid(row=7, column=1, sticky="w", **pad)
+        self.lbl_yuk = ttk.Label(frm, text="Yuklama: —", foreground="#0a58ca")
+        self.lbl_yuk.grid(row=7, column=2, columnspan=2, sticky="w", **pad)
+
+        btns = ttk.Frame(frm)
+        btns.grid(row=8, column=0, columnspan=4, sticky="we", pady=(14, 0))
+        ttk.Button(btns, text="Filtrni tozalash", command=self._clear_filters).pack(side="left")
+        ttk.Button(btns, text="Saqlash", command=self._save).pack(side="right")
+        ttk.Button(btns, text="Bekor qilish", command=self.destroy).pack(side="right", padx=(0, 8))
+
+        for cb in (self.cb_yon, self.cb_talim, self.cb_sem):
+            cb.bind("<<ComboboxSelected>>", lambda e: self._refresh_fan())
+        self.cb_fan.bind("<<ComboboxSelected>>", lambda e: self._on_fan())
+        self.cb_turi.bind("<<ComboboxSelected>>", lambda e: self._autofill_soat())
+
+        self.cb_yon.set(ALL)
+        self.cb_talim.set(ALL)
+        self.cb_sem.set(ALL)
+        self.cb_turi.set("Maruza")
+        self._refresh_fan()
+        if values:
+            self._prefill(values)
+
+        self.transient(master)
+        self.grab_set()
+        self.bind("<Escape>", lambda e: self.destroy())
+        self.update_idletasks()
+        self.geometry(f"+{master.winfo_rootx() + 60}+{master.winfo_rooty() + 50}")
+        self.wait_window(self)
+
+    def _distinct(self, key):
+        seen = []
+        for r in self.fanlar:
+            v = (r[key] or "").strip()
+            if v and v not in seen:
+                seen.append(v)
+        return sorted(seen)
+
+    def _distinct_sem(self):
+        return [str(x) for x in sorted({int(r["Semestr"]) for r in self.fanlar if r["Semestr"]})]
+
+    def _match(self, r):
+        y, t, s = self.cb_yon.get(), self.cb_talim.get(), self.cb_sem.get()
+        if y != ALL and (r["Yonalish"] or "") != y:
+            return False
+        if t != ALL and (r["TalimTuri"] or "") != t:
+            return False
+        if s != ALL:
+            rsem = str(int(r["Semestr"])) if r["Semestr"] else ""
+            if rsem != s:
+                return False
+        return True
+
+    def _fan_label(self, r):
+        bits = []
+        if r["Yonalish"]:
+            bits.append(r["Yonalish"])
+        if r["TalimTuri"]:
+            bits.append(r["TalimTuri"])
+        if r["Semestr"]:
+            bits.append(f'{int(r["Semestr"])}-sem')
+        tail = (" — " + ", ".join(bits)) if bits else ""
+        return f'{r["FanNomi"]}{tail}'
+
+    def _refresh_fan(self):
+        self.fan_filtered = [r for r in self.fanlar if self._match(r)]
+        self.cb_fan["values"] = [self._fan_label(r) for r in self.fan_filtered]
+        self.cb_fan.set("")
+        self.cb_turi["values"] = list(TUR_SOAT)
+        if self.cb_turi.get() not in TUR_SOAT:
+            self.cb_turi.set("Maruza")
+        self.lbl_yuk.config(text="Yuklama: —")
+
+    def _current_fan(self):
+        i = self.cb_fan.current()
+        if i < 0 or i >= len(self.fan_filtered):
+            return None
+        return self.fan_filtered[i]
+
+    def _on_fan(self):
+        r = self._current_fan()
+        if not r:
+            return
+        opts = list(TUR_SOAT)
+        if (r["TalimTuri"] or "") == "Masofaviy":     # Reyting only for distance education
+            opts.append("Reyting")
+        cur = self.cb_turi.get()
+        self.cb_turi["values"] = opts
+        if cur not in opts:
+            self.cb_turi.set("Maruza")
+        self._autofill_soat()
+
+    def _autofill_soat(self):
+        r = self._current_fan()
+        if not r:
+            return
+        field = {"Maruza": "Maruza", "Amaliyot": "Amaliyot", "Reyting": "Reyting"}.get(self.cb_turi.get())
+        val = (r[field] if field else 0) or 0
+        self.var_soat.set(g(val))
+        self.lbl_yuk.config(text=f"Yuklama: {g(val)} soat")
+
+    def _clear_filters(self):
+        self.cb_yon.set(ALL)
+        self.cb_talim.set(ALL)
+        self.cb_sem.set(ALL)
+        self._refresh_fan()
+
+    def _prefill(self, v):
+        if v.get("DomlaID") in self.domla_ids:
+            self.cb_domla.current(self.domla_ids.index(v["DomlaID"]))
+        fan = next((r for r in self.fanlar if r["FanID"] == v.get("FanID")), None)
+        if fan:
+            self.cb_yon.set(fan["Yonalish"] or ALL)
+            self.cb_talim.set(fan["TalimTuri"] or ALL)
+            self.cb_sem.set(str(int(fan["Semestr"])) if fan["Semestr"] else ALL)
+            self._refresh_fan()
+            ids = [r["FanID"] for r in self.fan_filtered]
+            if v["FanID"] in ids:
+                self.cb_fan.current(ids.index(v["FanID"]))
+                self._on_fan()
+        if v.get("TurSoat") and v["TurSoat"] in self.cb_turi["values"]:
+            self.cb_turi.set(v["TurSoat"])
+        if v.get("Soat") is not None:
+            self.var_soat.set(g(v["Soat"]))
+
+    def _save(self):
+        di = self.cb_domla.current()
+        if di < 0:
+            messagebox.showerror("Xato", "Domla tanlanishi shart.", parent=self)
+            return
+        fan = self._current_fan()
+        if not fan:
+            messagebox.showerror("Xato", "Fan tanlanishi shart.", parent=self)
+            return
+        if not self.cb_turi.get():
+            messagebox.showerror("Xato", "Soat turi tanlanishi shart.", parent=self)
+            return
+        try:
+            txt = self.var_soat.get().strip().replace(",", ".")
+            soat = float(txt) if txt else 0.0
+        except ValueError:
+            messagebox.showerror("Xato", "Soat raqam bo'lishi kerak.", parent=self)
+            return
+        self.result = {"DomlaID": self.domla_ids[di], "FanID": fan["FanID"],
+                       "TurSoat": self.cb_turi.get(), "Soat": soat}
         self.destroy()
 
 
@@ -207,8 +397,8 @@ class App(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title(APP_TITLE)
-        self.geometry("1120x660")
-        self.minsize(900, 520)
+        self.geometry("1160x680")
+        self.minsize(940, 540)
         try:
             ttk.Style().theme_use("clam")
         except tk.TclError:
@@ -232,7 +422,6 @@ class App(tk.Tk):
         self.status = tk.StringVar(value=f"Ma'lumotlar bazasi: {db_path()}")
         ttk.Label(self, textvariable=self.status, anchor="w",
                   relief="sunken", padding=(8, 3)).pack(fill="x", side="bottom")
-
         self.refresh_all()
 
     def _style(self):
@@ -240,7 +429,7 @@ class App(tk.Tk):
         st.configure("Title.TLabel", font=("Segoe UI", 15, "bold"))
         st.configure("Treeview", rowheight=24)
         st.configure("Treeview.Heading", font=("Segoe UI", 9, "bold"))
-        st.configure("TButton", padding=(10, 4))
+        st.configure("TButton", padding=(9, 4))
 
     # ---------- generic helpers ----------
     def _make_tab(self, title):
@@ -251,6 +440,11 @@ class App(tk.Tk):
         body = ttk.Frame(f)
         body.pack(fill="both", expand=True)
         return f, bar, body
+
+    def _add_search(self, bar, var):
+        ttk.Label(bar, text="🔍 Qidirish:").pack(side="left", padx=(16, 4))
+        e = ttk.Entry(bar, textvariable=var, width=24)
+        e.pack(side="left")
 
     def _make_tree(self, parent, columns, widths, anchors=None):
         wrap = ttk.Frame(parent)
@@ -267,7 +461,8 @@ class App(tk.Tk):
         anchors = anchors or {}
         for c, w in zip(columns, widths):
             tree.heading(c, text=c)
-            tree.column(c, width=w, anchor=anchors.get(c, "w"), stretch=(c in ("F.I.Sh.", "Fan nomi")))
+            tree.column(c, width=w, anchor=anchors.get(c, "w"),
+                        stretch=(c in ("F.I.Sh.", "Fan nomi", "Domla (F.I.Sh.)", "Fan")))
         tree.tag_configure("odd", background="#f5f7fa")
         return tree
 
@@ -276,8 +471,7 @@ class App(tk.Tk):
         sel = tree.selection()
         tree.delete(*tree.get_children())
         for i, (iid, vals) in enumerate(rows):
-            tree.insert("", "end", iid=str(iid), values=vals,
-                        tags=("odd",) if i % 2 else ())
+            tree.insert("", "end", iid=str(iid), values=vals, tags=("odd",) if i % 2 else ())
         if sel and tree.exists(sel[0]):
             tree.selection_set(sel[0])
 
@@ -286,36 +480,93 @@ class App(tk.Tk):
         s = tree.selection()
         return int(s[0]) if s else None
 
-    # ================= DOMLALAR (teachers) =================
+    @staticmethod
+    def _i(v, default=0):
+        try:
+            return int(float(str(v).strip()))
+        except (ValueError, TypeError):
+            return default
+
+    @staticmethod
+    def _f(v, default=0.0):
+        try:
+            return float(str(v).strip().replace(",", "."))
+        except (ValueError, TypeError):
+            return default
+
+    # ---------- CSV template + import ----------
+    def _save_template(self, headers, example, default_name):
+        path = filedialog.asksaveasfilename(defaultextension=".csv",
+                                            filetypes=[("CSV", "*.csv")], initialfile=default_name)
+        if not path:
+            return
+        try:
+            with open(path, "w", newline="", encoding="utf-8-sig") as fh:
+                w = csv.writer(fh)
+                w.writerow(headers)
+                w.writerow(example)
+            messagebox.showinfo("Tayyor", f"Shablon saqlandi:\n{path}\n\n"
+                                "Faylni Excel'da to'ldiring, namuna qatorini o'chiring va "
+                                "\"CSV import\" orqali yuklang.")
+        except OSError as e:
+            messagebox.showerror("Xato", str(e))
+
+    def _csv_import(self, table, expected, insert_sql, row_to_tuple):
+        path = filedialog.askopenfilename(filetypes=[("CSV", "*.csv"), ("Hamma fayllar", "*.*")])
+        if not path:
+            return
+        try:
+            with open(path, newline="", encoding="utf-8-sig") as fh:
+                reader = csv.DictReader(fh)
+                rows = [row_to_tuple({k.strip(): v for k, v in r.items()}) for r in reader]
+        except (OSError, csv.Error) as e:
+            messagebox.showerror("Xato", f"CSV o'qishda xato:\n{e}")
+            return
+        rows = [r for r in rows if r and r[0]]
+        if not rows:
+            messagebox.showwarning("Bo'sh", f"Mos qatorlar topilmadi.\nKutilgan ustunlar: {', '.join(expected)}")
+            return
+        if not messagebox.askyesno("Import", f"{len(rows)} ta yozuv \"{table}\" jadvaliga qo'shilsinmi?"):
+            return
+        self.con.executemany(insert_sql, rows)
+        self.con.commit()
+        self.refresh_all()
+        messagebox.showinfo("Tayyor", f"{len(rows)} ta yozuv qo'shildi.")
+
+    # ================= DOMLALAR =================
     def _build_domlalar(self):
         _, bar, body = self._make_tab("  Domlalar  ")
         ttk.Button(bar, text="+ Qo'shish", command=self.dom_add).pack(side="left")
         ttk.Button(bar, text="Tahrirlash", command=self.dom_edit).pack(side="left", padx=4)
         ttk.Button(bar, text="O'chirish", command=self.dom_del).pack(side="left")
         ttk.Button(bar, text="CSV import", command=self.dom_import).pack(side="left", padx=(12, 0))
+        ttk.Button(bar, text="Shablon", command=self.dom_template).pack(side="left", padx=4)
+        self.dom_q = tk.StringVar()
+        self._add_search(bar, self.dom_q)
+        self.dom_q.trace_add("write", lambda *_: self.load_domlalar())
         cols = ["ID", "F.I.Sh.", "Ilmiy unvon", "Kat.", "Stavka", "Meyor (1 st.)", "Meyor (jami)"]
         w = [50, 280, 110, 50, 70, 100, 100]
-        an = {"ID": "center", "Kat.": "center", "Stavka": "e",
-              "Meyor (1 st.)": "e", "Meyor (jami)": "e"}
+        an = {"ID": "center", "Kat.": "center", "Stavka": "e", "Meyor (1 st.)": "e", "Meyor (jami)": "e"}
         self.t_dom = self._make_tree(body, cols, w, an)
         self.t_dom.bind("<Double-1>", lambda e: self.dom_edit())
 
     def load_domlalar(self):
+        q = (self.dom_q.get() if hasattr(self, "dom_q") else "").strip().lower()
         rows = []
         for r in self.con.execute("SELECT * FROM Domlalar ORDER BY FIO COLLATE NOCASE"):
+            if q and q not in (r["FIO"] or "").lower() and q not in (r["IlmiyUnvon"] or "").lower():
+                continue
             rows.append((r["DomlaID"], (
                 r["DomlaID"], r["FIO"], r["IlmiyUnvon"], g(r["Kategoriya"]),
                 g(r["Stavka"]), g(r["Meyor1St"]), g(meyor_jami(r["Meyor1St"], r["Stavka"])))))
         self._fill(self.t_dom, rows)
 
     def _dom_spec(self):
-        return [
-            ("FIO", "F.I.Sh.", "text", None),
-            ("IlmiyUnvon", "Ilmiy unvon", "combo", UNVON),
-            ("Kategoriya", "Kategoriya", "combo", KATEGORIYA),
-            ("Stavka", "Stavka", "float", None),
-            ("Meyor1St", "Meyor (1 stavka)", "float", None),
-        ]
+        return [("FIO", "F.I.Sh.", "text", None),
+                ("IlmiyUnvon", "Ilmiy unvon", "combo", UNVON),
+                ("Kategoriya", "Kategoriya", "combo", KATEGORIYA),
+                ("Stavka", "Stavka", "float", None),
+                ("Meyor1St", "Meyor (1 stavka)", "float", None)]
 
     @staticmethod
     def _dom_preview(d):
@@ -326,9 +577,8 @@ class App(tk.Tk):
                        {"Stavka": 1, "IlmiyUnvon": "PhD", "Kategoriya": "1"},
                        computed=self._dom_preview).result
         if d:
-            self.con.execute(
-                "INSERT INTO Domlalar(FIO,IlmiyUnvon,Kategoriya,Stavka,Meyor1St) VALUES(?,?,?,?,?)",
-                (d["FIO"], d["IlmiyUnvon"], int(d["Kategoriya"] or 0), d["Stavka"], d["Meyor1St"]))
+            self.con.execute("INSERT INTO Domlalar(FIO,IlmiyUnvon,Kategoriya,Stavka,Meyor1St) VALUES(?,?,?,?,?)",
+                             (d["FIO"], d["IlmiyUnvon"], int(d["Kategoriya"] or 0), d["Stavka"], d["Meyor1St"]))
             self.con.commit()
             self.refresh_all()
 
@@ -340,9 +590,8 @@ class App(tk.Tk):
         d = FormDialog(self, "Domlani tahrirlash", self._dom_spec(), dict(r),
                        computed=self._dom_preview).result
         if d:
-            self.con.execute(
-                "UPDATE Domlalar SET FIO=?,IlmiyUnvon=?,Kategoriya=?,Stavka=?,Meyor1St=? WHERE DomlaID=?",
-                (d["FIO"], d["IlmiyUnvon"], int(d["Kategoriya"] or 0), d["Stavka"], d["Meyor1St"], i))
+            self.con.execute("UPDATE Domlalar SET FIO=?,IlmiyUnvon=?,Kategoriya=?,Stavka=?,Meyor1St=? WHERE DomlaID=?",
+                             (d["FIO"], d["IlmiyUnvon"], int(d["Kategoriya"] or 0), d["Stavka"], d["Meyor1St"], i))
             self.con.commit()
             self.refresh_all()
 
@@ -353,8 +602,7 @@ class App(tk.Tk):
         used = self.con.execute("SELECT COUNT(*) c FROM Taqsimot WHERE DomlaID=?", (i,)).fetchone()["c"]
         if used:
             messagebox.showwarning("O'chirib bo'lmaydi",
-                                    f"Bu domla taqsimotda {used} marta ishlatilgan. "
-                                    "Avval taqsimotdagi yozuvlarni o'chiring.")
+                                   f"Bu domla taqsimotda {used} marta ishlatilgan. Avval o'sha yozuvlarni o'chiring.")
             return
         if messagebox.askyesno("Tasdiqlang", "Tanlangan domla o'chirilsinmi?"):
             self.con.execute("DELETE FROM Domlalar WHERE DomlaID=?", (i,))
@@ -362,24 +610,25 @@ class App(tk.Tk):
             self.refresh_all()
 
     def dom_import(self):
-        self._csv_import(
-            "Domlalar", ["FIO", "IlmiyUnvon", "Kategoriya", "Stavka", "Meyor1St"],
-            "INSERT INTO Domlalar(FIO,IlmiyUnvon,Kategoriya,Stavka,Meyor1St) VALUES(?,?,?,?,?)",
-            lambda row: (row.get("FIO", "").strip(), row.get("IlmiyUnvon", "").strip() or "Darajasiz",
-                         self._i(row.get("Kategoriya")), self._f(row.get("Stavka"), 1),
-                         self._f(row.get("Meyor1St"))))
+        self._csv_import("Domlalar", ["FIO", "IlmiyUnvon", "Kategoriya", "Stavka", "Meyor1St"],
+                         "INSERT INTO Domlalar(FIO,IlmiyUnvon,Kategoriya,Stavka,Meyor1St) VALUES(?,?,?,?,?)",
+                         lambda r: (r.get("FIO", "").strip(), r.get("IlmiyUnvon", "").strip() or "Darajasiz",
+                                    self._i(r.get("Kategoriya")), self._f(r.get("Stavka"), 1), self._f(r.get("Meyor1St"))))
 
-    # ================= FANLAR (subjects) =================
+    def dom_template(self):
+        self._save_template(["FIO", "IlmiyUnvon", "Kategoriya", "Stavka", "Meyor1St"],
+                            ["Familiya Ism Otasi", "PhD", "1", "1.5", "360"], "domlalar_shablon.csv")
+
+    # ================= FANLAR =================
     def _build_fanlar(self):
         _, bar, body = self._make_tab("  Fanlar  ")
         ttk.Button(bar, text="+ Qo'shish", command=self.fan_add).pack(side="left")
         ttk.Button(bar, text="Tahrirlash", command=self.fan_edit).pack(side="left", padx=4)
         ttk.Button(bar, text="O'chirish", command=self.fan_del).pack(side="left")
         ttk.Button(bar, text="CSV import", command=self.fan_import).pack(side="left", padx=(12, 0))
-        ttk.Label(bar, text="Qidirish:").pack(side="left", padx=(16, 4))
+        ttk.Button(bar, text="Shablon", command=self.fan_template).pack(side="left", padx=4)
         self.fan_q = tk.StringVar()
-        e = ttk.Entry(bar, textvariable=self.fan_q, width=24)
-        e.pack(side="left")
+        self._add_search(bar, self.fan_q)
         self.fan_q.trace_add("write", lambda *_: self.load_fanlar())
         cols = ["ID", "Fan nomi", "Yo'nalish", "Ta'lim turi", "Sem.",
                 "Ma'ruza", "Amaliyot", "Potok", "Guruh", "Reyting", "Jami soat"]
@@ -398,28 +647,24 @@ class App(tk.Tk):
             _, _, jami = fan_totals(r["Maruza"], r["Amaliyot"], r["Potok"], r["Guruh"], r["Reyting"])
             rows.append((r["FanID"], (
                 r["FanID"], r["FanNomi"], r["Yonalish"], r["TalimTuri"], g(r["Semestr"]),
-                g(r["Maruza"]), g(r["Amaliyot"]), g(r["Potok"]), g(r["Guruh"]),
-                g(r["Reyting"]), g(jami))))
+                g(r["Maruza"]), g(r["Amaliyot"]), g(r["Potok"]), g(r["Guruh"]), g(r["Reyting"]), g(jami))))
         self._fill(self.t_fan, rows)
 
     def _fan_spec(self):
-        return [
-            ("FanNomi", "Fan nomi", "text", None),
-            ("Yonalish", "Yo'nalish", "combo", YONALISH),
-            ("TalimTuri", "Ta'lim turi", "combo", TALIM_TURI),
-            ("Kategoriya", "Kategoriya", "combo", KATEGORIYA),
-            ("Semestr", "Semestr", "combo", SEMESTR),
-            ("Maruza", "Ma'ruza (soat)", "float", None),
-            ("Amaliyot", "Amaliyot (soat)", "float", None),
-            ("Potok", "Potok (oqim soni)", "int", None),
-            ("Guruh", "Guruh soni", "int", None),
-            ("Reyting", "Reyting (soat)", "float", None),
-        ]
+        return [("FanNomi", "Fan nomi", "text", None),
+                ("Yonalish", "Yo'nalish", "combo", YONALISH),
+                ("TalimTuri", "Ta'lim turi", "combo", TALIM_TURI),
+                ("Kategoriya", "Kategoriya", "combo", KATEGORIYA),
+                ("Semestr", "Semestr", "combo", SEMESTR),
+                ("Maruza", "Ma'ruza (soat)", "float", None),
+                ("Amaliyot", "Amaliyot (soat)", "float", None),
+                ("Potok", "Potok (oqim soni)", "int", None),
+                ("Guruh", "Guruh soni", "int", None),
+                ("Reyting", "Reyting (soat)", "float", None)]
 
     @staticmethod
     def _fan_preview(d):
-        mj, aj, js = fan_totals(d.get("Maruza"), d.get("Amaliyot"),
-                                d.get("Potok"), d.get("Guruh"), d.get("Reyting"))
+        mj, aj, js = fan_totals(d.get("Maruza"), d.get("Amaliyot"), d.get("Potok"), d.get("Guruh"), d.get("Reyting"))
         return f"Ma'ruza jami={g(mj)} · Amaliyot jami={g(aj)} · Jami soat={g(js)}"
 
     def fan_add(self):
@@ -427,11 +672,10 @@ class App(tk.Tk):
                        {"Potok": 1, "Guruh": 1, "Kategoriya": "1", "TalimTuri": "Kunduzgi"},
                        computed=self._fan_preview).result
         if d:
-            self.con.execute(
-                "INSERT INTO Fanlar(FanNomi,Yonalish,TalimTuri,Kategoriya,Semestr,"
-                "Maruza,Amaliyot,Potok,Guruh,Reyting) VALUES(?,?,?,?,?,?,?,?,?,?)",
-                (d["FanNomi"], d["Yonalish"], d["TalimTuri"], int(d["Kategoriya"] or 0),
-                 int(d["Semestr"] or 0), d["Maruza"], d["Amaliyot"], d["Potok"], d["Guruh"], d["Reyting"]))
+            self.con.execute("INSERT INTO Fanlar(FanNomi,Yonalish,TalimTuri,Kategoriya,Semestr,"
+                             "Maruza,Amaliyot,Potok,Guruh,Reyting) VALUES(?,?,?,?,?,?,?,?,?,?)",
+                             (d["FanNomi"], d["Yonalish"], d["TalimTuri"], int(d["Kategoriya"] or 0),
+                              int(d["Semestr"] or 0), d["Maruza"], d["Amaliyot"], d["Potok"], d["Guruh"], d["Reyting"]))
             self.con.commit()
             self.refresh_all()
 
@@ -440,15 +684,12 @@ class App(tk.Tk):
         if i is None:
             return
         r = self.con.execute("SELECT * FROM Fanlar WHERE FanID=?", (i,)).fetchone()
-        d = FormDialog(self, "Fanni tahrirlash", self._fan_spec(), dict(r),
-                       computed=self._fan_preview).result
+        d = FormDialog(self, "Fanni tahrirlash", self._fan_spec(), dict(r), computed=self._fan_preview).result
         if d:
-            self.con.execute(
-                "UPDATE Fanlar SET FanNomi=?,Yonalish=?,TalimTuri=?,Kategoriya=?,Semestr=?,"
-                "Maruza=?,Amaliyot=?,Potok=?,Guruh=?,Reyting=? WHERE FanID=?",
-                (d["FanNomi"], d["Yonalish"], d["TalimTuri"], int(d["Kategoriya"] or 0),
-                 int(d["Semestr"] or 0), d["Maruza"], d["Amaliyot"], d["Potok"], d["Guruh"],
-                 d["Reyting"], i))
+            self.con.execute("UPDATE Fanlar SET FanNomi=?,Yonalish=?,TalimTuri=?,Kategoriya=?,Semestr=?,"
+                             "Maruza=?,Amaliyot=?,Potok=?,Guruh=?,Reyting=? WHERE FanID=?",
+                             (d["FanNomi"], d["Yonalish"], d["TalimTuri"], int(d["Kategoriya"] or 0),
+                              int(d["Semestr"] or 0), d["Maruza"], d["Amaliyot"], d["Potok"], d["Guruh"], d["Reyting"], i))
             self.con.commit()
             self.refresh_all()
 
@@ -459,8 +700,7 @@ class App(tk.Tk):
         used = self.con.execute("SELECT COUNT(*) c FROM Taqsimot WHERE FanID=?", (i,)).fetchone()["c"]
         if used:
             messagebox.showwarning("O'chirib bo'lmaydi",
-                                    f"Bu fan taqsimotda {used} marta ishlatilgan. "
-                                    "Avval taqsimotdagi yozuvlarni o'chiring.")
+                                   f"Bu fan taqsimotda {used} marta ishlatilgan. Avval o'sha yozuvlarni o'chiring.")
             return
         if messagebox.askyesno("Tasdiqlang", "Tanlangan fan o'chirilsinmi?"):
             self.con.execute("DELETE FROM Fanlar WHERE FanID=?", (i,))
@@ -470,99 +710,77 @@ class App(tk.Tk):
     def fan_import(self):
         cols = ["FanNomi", "Yonalish", "TalimTuri", "Kategoriya", "Semestr",
                 "Maruza", "Amaliyot", "Potok", "Guruh", "Reyting"]
-        self._csv_import(
-            "Fanlar", cols,
-            "INSERT INTO Fanlar(FanNomi,Yonalish,TalimTuri,Kategoriya,Semestr,"
-            "Maruza,Amaliyot,Potok,Guruh,Reyting) VALUES(?,?,?,?,?,?,?,?,?,?)",
-            lambda row: (row.get("FanNomi", "").strip(), row.get("Yonalish", "").strip(),
-                         row.get("TalimTuri", "").strip(), self._i(row.get("Kategoriya")),
-                         self._i(row.get("Semestr")), self._f(row.get("Maruza")),
-                         self._f(row.get("Amaliyot")), self._i(row.get("Potok"), 1),
-                         self._i(row.get("Guruh"), 1), self._f(row.get("Reyting"))))
+        self._csv_import("Fanlar", cols,
+                         "INSERT INTO Fanlar(FanNomi,Yonalish,TalimTuri,Kategoriya,Semestr,"
+                         "Maruza,Amaliyot,Potok,Guruh,Reyting) VALUES(?,?,?,?,?,?,?,?,?,?)",
+                         lambda r: (r.get("FanNomi", "").strip(), r.get("Yonalish", "").strip(),
+                                    r.get("TalimTuri", "").strip(), self._i(r.get("Kategoriya")),
+                                    self._i(r.get("Semestr")), self._f(r.get("Maruza")), self._f(r.get("Amaliyot")),
+                                    self._i(r.get("Potok"), 1), self._i(r.get("Guruh"), 1), self._f(r.get("Reyting"))))
 
-    # ================= TAQSIMOT (distribution) =================
+    def fan_template(self):
+        self._save_template(["FanNomi", "Yonalish", "TalimTuri", "Kategoriya", "Semestr",
+                             "Maruza", "Amaliyot", "Potok", "Guruh", "Reyting"],
+                            ["Fan nomi", "Iqtisodiyot", "Kunduzgi", "1", "3", "30", "30", "1", "1", "0"],
+                            "fanlar_shablon.csv")
+
+    # ================= TAQSIMOT =================
     def _build_taqsimot(self):
         _, bar, body = self._make_tab("  Taqsimot  ")
         ttk.Button(bar, text="+ Qo'shish", command=self.taq_add).pack(side="left")
         ttk.Button(bar, text="Tahrirlash", command=self.taq_edit).pack(side="left", padx=4)
         ttk.Button(bar, text="O'chirish", command=self.taq_del).pack(side="left")
+        self.taq_q = tk.StringVar()
+        self._add_search(bar, self.taq_q)
+        self.taq_q.trace_add("write", lambda *_: self.load_taqsimot())
         cols = ["ID", "Domla (F.I.Sh.)", "Fan", "Turi", "Soat"]
-        w = [50, 280, 320, 110, 80]
+        w = [50, 260, 320, 110, 80]
         self.t_taq = self._make_tree(body, cols, w, {"ID": "center", "Soat": "e"})
         self.t_taq.bind("<Double-1>", lambda e: self.taq_edit())
 
     def load_taqsimot(self):
+        q = (self.taq_q.get() if hasattr(self, "taq_q") else "").strip().lower()
         sql = """SELECT t.TaqsimotID, d.FIO, f.FanNomi, t.TurSoat, t.Soat
                  FROM Taqsimot t
                  LEFT JOIN Domlalar d ON d.DomlaID=t.DomlaID
                  LEFT JOIN Fanlar f   ON f.FanID=t.FanID
                  ORDER BY d.FIO COLLATE NOCASE, f.FanNomi COLLATE NOCASE"""
-        rows = [(r["TaqsimotID"], (r["TaqsimotID"], r["FIO"] or "—",
-                                   r["FanNomi"] or "—", r["TurSoat"], g(r["Soat"])))
-                for r in self.con.execute(sql)]
+        rows = []
+        for r in self.con.execute(sql):
+            fio, fan = r["FIO"] or "—", r["FanNomi"] or "—"
+            if q and q not in fio.lower() and q not in fan.lower():
+                continue
+            rows.append((r["TaqsimotID"], (r["TaqsimotID"], fio, fan, r["TurSoat"], g(r["Soat"]))))
         self._fill(self.t_taq, rows)
 
-    def _maps(self):
-        doms = self.con.execute("SELECT DomlaID,FIO FROM Domlalar ORDER BY FIO COLLATE NOCASE").fetchall()
-        fans = self.con.execute("SELECT FanID,FanNomi FROM Fanlar ORDER BY FanNomi COLLATE NOCASE").fetchall()
-        dlist = [f"{r['DomlaID']} — {r['FIO']}" for r in doms]
-        flist = [f"{r['FanID']} — {r['FanNomi']}" for r in fans]
-        return dlist, flist
-
-    @staticmethod
-    def _id_from(label):
-        try:
-            return int(str(label).split(" — ", 1)[0])
-        except (ValueError, IndexError):
-            return None
-
-    def _taq_dialog(self, values=None):
+    def _has_base_data(self):
         if not self.con.execute("SELECT 1 FROM Domlalar LIMIT 1").fetchone() or \
            not self.con.execute("SELECT 1 FROM Fanlar LIMIT 1").fetchone():
-            messagebox.showwarning("Ma'lumot yetarli emas",
-                                   "Avval kamida bitta domla va bitta fan kiriting.")
-            return None
-        dlist, flist = self._maps()
-        spec = [
-            ("Domla", "Domla", "combo", dlist),
-            ("Fan", "Fan", "combo", flist),
-            ("TurSoat", "Soat turi", "combo", TUR_SOAT),
-            ("Soat", "Soat", "float", None),
-        ]
-        # combos here should not be free-text
-        FormDialog.FIXED = FormDialog.FIXED | {"Domla", "Fan"}
-        return FormDialog(self, "Taqsimot yozuvi", spec, values or {"TurSoat": "Maruza", "Soat": 30}).result
+            messagebox.showwarning("Ma'lumot yetarli emas", "Avval kamida bitta domla va bitta fan kiriting.")
+            return False
+        return True
 
     def taq_add(self):
-        d = self._taq_dialog()
-        if not d:
+        if not self._has_base_data():
             return
-        did, fid = self._id_from(d["Domla"]), self._id_from(d["Fan"])
-        if did is None or fid is None:
-            messagebox.showerror("Xato", "Domla va fan tanlanishi kerak.")
-            return
-        self.con.execute("INSERT INTO Taqsimot(DomlaID,FanID,TurSoat,Soat) VALUES(?,?,?,?)",
-                         (did, fid, d["TurSoat"], d["Soat"]))
-        self.con.commit()
-        self.refresh_all()
+        d = TaqsimotDialog(self, self.con).result
+        if d:
+            self.con.execute("INSERT INTO Taqsimot(DomlaID,FanID,TurSoat,Soat) VALUES(?,?,?,?)",
+                             (d["DomlaID"], d["FanID"], d["TurSoat"], d["Soat"]))
+            self.con.commit()
+            self.refresh_all()
 
     def taq_edit(self):
         i = self._selected_id(self.t_taq)
         if i is None:
             return
-        r = self.con.execute("""SELECT t.*, d.FIO, f.FanNomi FROM Taqsimot t
-                                LEFT JOIN Domlalar d ON d.DomlaID=t.DomlaID
-                                LEFT JOIN Fanlar f ON f.FanID=t.FanID
-                                WHERE TaqsimotID=?""", (i,)).fetchone()
-        pre = {"Domla": f"{r['DomlaID']} — {r['FIO']}", "Fan": f"{r['FanID']} — {r['FanNomi']}",
-               "TurSoat": r["TurSoat"], "Soat": r["Soat"]}
-        d = self._taq_dialog(pre)
-        if not d:
-            return
-        self.con.execute("UPDATE Taqsimot SET DomlaID=?,FanID=?,TurSoat=?,Soat=? WHERE TaqsimotID=?",
-                         (self._id_from(d["Domla"]), self._id_from(d["Fan"]), d["TurSoat"], d["Soat"], i))
-        self.con.commit()
-        self.refresh_all()
+        r = self.con.execute("SELECT * FROM Taqsimot WHERE TaqsimotID=?", (i,)).fetchone()
+        d = TaqsimotDialog(self, self.con, dict(r)).result
+        if d:
+            self.con.execute("UPDATE Taqsimot SET DomlaID=?,FanID=?,TurSoat=?,Soat=? WHERE TaqsimotID=?",
+                             (d["DomlaID"], d["FanID"], d["TurSoat"], d["Soat"], i))
+            self.con.commit()
+            self.refresh_all()
 
     def taq_del(self):
         i = self._selected_id(self.t_taq)
@@ -573,91 +791,59 @@ class App(tk.Tk):
             self.con.commit()
             self.refresh_all()
 
-    # ================= YUKLAMA (workload report) =================
+    # ================= YUKLAMA (report) =================
     def _build_yuklama(self):
         _, bar, body = self._make_tab("  Yuklama (hisobot)  ")
         ttk.Button(bar, text="Yangilash", command=self.load_yuklama).pack(side="left")
         ttk.Button(bar, text="CSV ga eksport", command=self.yuk_export).pack(side="left", padx=8)
+        self.yuk_q = tk.StringVar()
+        self._add_search(bar, self.yuk_q)
+        self.yuk_q.trace_add("write", lambda *_: self.load_yuklama())
         self.yuk_summary = tk.StringVar()
         ttk.Label(bar, textvariable=self.yuk_summary, foreground="#444").pack(side="right")
-        cols = ["F.I.Sh.", "Stavka", "Meyor (jami)", "Ma'ruza", "Amaliyot",
+        cols = ["F.I.Sh.", "Stavka", "Meyor (jami)", "Ma'ruza", "Amaliyot", "Reyting",
                 "Jami berilgan", "Farq", "Bajarilish %"]
-        w = [280, 70, 110, 90, 90, 110, 90, 110]
+        w = [260, 65, 100, 80, 80, 70, 100, 80, 100]
         an = {c: "e" for c in cols if c != "F.I.Sh."}
         self.t_yuk = self._make_tree(body, cols, w, an)
-        self.t_yuk.tag_configure("full", background="#d8f5dd")     # met/exceeded norm
-        self.t_yuk.tag_configure("partial", background="#fff3cd")  # 70-99%
-        self.t_yuk.tag_configure("low", background="#f8d7da")      # under 70%
+        self.t_yuk.tag_configure("full", background="#d8f5dd")
+        self.t_yuk.tag_configure("partial", background="#fff3cd")
+        self.t_yuk.tag_configure("low", background="#f8d7da")
 
     def load_yuklama(self):
-        data = workload_rows(self.con)
+        q = (self.yuk_q.get() if hasattr(self, "yuk_q") else "").strip().lower()
         self.t_yuk.delete(*self.t_yuk.get_children())
         tot_norm = tot_assigned = 0
-        for d in data:
+        shown = 0
+        for d in workload_rows(self.con):
             tot_norm += d["norm"]
             tot_assigned += d["jami"]
+            if q and q not in d["fio"].lower():
+                continue
+            shown += 1
             tag = "full" if d["pct"] >= 100 else "partial" if d["pct"] >= 70 else "low"
             self.t_yuk.insert("", "end", values=(
                 d["fio"], g(d["stavka"]), g(d["norm"]), g(d["maruza"]), g(d["amaliyot"]),
-                g(d["jami"]), g(d["diff"]), f"{d['pct']:.0f}%"), tags=(tag,))
-        self.yuk_summary.set(
-            f"Domlalar: {len(data)}   |   Umumiy meyor: {g(tot_norm)} soat   "
-            f"|   Berilgan: {g(tot_assigned)} soat")
+                g(d["reyting"]), g(d["jami"]), g(d["diff"]), f"{d['pct']:.0f}%"), tags=(tag,))
+        self.yuk_summary.set(f"Ko'rsatilgan: {shown}   |   Umumiy meyor: {g(tot_norm)} soat   "
+                             f"|   Berilgan: {g(tot_assigned)} soat")
 
     def yuk_export(self):
-        path = filedialog.asksaveasfilename(
-            defaultextension=".csv", filetypes=[("CSV", "*.csv")],
-            initialfile="yuklama_hisobot.csv")
+        path = filedialog.asksaveasfilename(defaultextension=".csv",
+                                            filetypes=[("CSV", "*.csv")], initialfile="yuklama_hisobot.csv")
         if not path:
             return
         try:
             with open(path, "w", newline="", encoding="utf-8-sig") as fh:
-                wtr = csv.writer(fh)
-                wtr.writerow(["FIO", "Stavka", "Meyor_jami", "Maruza", "Amaliyot",
-                              "Jami_berilgan", "Farq", "Bajarilish_%"])
+                w = csv.writer(fh)
+                w.writerow(["FIO", "Stavka", "Meyor_jami", "Maruza", "Amaliyot", "Reyting",
+                            "Jami_berilgan", "Farq", "Bajarilish_%"])
                 for d in workload_rows(self.con):
-                    wtr.writerow([d["fio"], g(d["stavka"]), g(d["norm"]), g(d["maruza"]),
-                                  g(d["amaliyot"]), g(d["jami"]), g(d["diff"]), f"{d['pct']:.0f}"])
+                    w.writerow([d["fio"], g(d["stavka"]), g(d["norm"]), g(d["maruza"]), g(d["amaliyot"]),
+                                g(d["reyting"]), g(d["jami"]), g(d["diff"]), f"{d['pct']:.0f}"])
             messagebox.showinfo("Tayyor", f"Hisobot saqlandi:\n{path}")
         except OSError as e:
             messagebox.showerror("Xato", str(e))
-
-    # ---------- shared CSV import ----------
-    @staticmethod
-    def _i(v, default=0):
-        try:
-            return int(float(str(v).strip()))
-        except (ValueError, TypeError):
-            return default
-
-    @staticmethod
-    def _f(v, default=0.0):
-        try:
-            return float(str(v).strip().replace(",", "."))
-        except (ValueError, TypeError):
-            return default
-
-    def _csv_import(self, table, expected, insert_sql, row_to_tuple):
-        path = filedialog.askopenfilename(filetypes=[("CSV", "*.csv"), ("Hamma fayllar", "*.*")])
-        if not path:
-            return
-        try:
-            with open(path, newline="", encoding="utf-8-sig") as fh:
-                reader = csv.DictReader(fh)
-                rows = [row_to_tuple({k.strip(): v for k, v in r.items()}) for r in reader]
-        except (OSError, csv.Error) as e:
-            messagebox.showerror("Xato", f"CSV o'qishda xato:\n{e}")
-            return
-        rows = [r for r in rows if r and r[0]]  # require a name in the first column
-        if not rows:
-            messagebox.showwarning("Bo'sh", f"Mos qatorlar topilmadi.\nKutilgan ustunlar: {', '.join(expected)}")
-            return
-        if not messagebox.askyesno("Import", f"{len(rows)} ta yozuv \"{table}\" jadvaliga qo'shilsinmi?"):
-            return
-        self.con.executemany(insert_sql, rows)
-        self.con.commit()
-        self.refresh_all()
-        messagebox.showinfo("Tayyor", f"{len(rows)} ta yozuv qo'shildi.")
 
     # ---------- refresh ----------
     def _on_tab(self):
@@ -673,8 +859,7 @@ class App(tk.Tk):
 
 
 def main():
-    app = App()
-    app.mainloop()
+    App().mainloop()
 
 
 if __name__ == "__main__":
