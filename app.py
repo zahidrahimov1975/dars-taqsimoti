@@ -108,18 +108,34 @@ def short_name(fio):
     return " ".join(parts[:2]) if parts else (fio or "")
 
 
+def fan_rules(dlg):
+    """Reyting only applies to Masofaviy subjects; otherwise disable the field and force 0."""
+    w = dlg.widgets.get("Reyting")
+    if w is None:
+        return
+    if dlg.vars["TalimTuri"].get().strip() == "Masofaviy":
+        w.config(state="normal")
+    else:
+        if dlg.vars["Reyting"].get() not in ("", "0", "0.0"):
+            dlg.vars["Reyting"].set("0")
+        w.config(state="disabled")
+
+
 # ===================== Generic Add/Edit dialog (Domlalar, Fanlar) =====================
 class FormDialog(tk.Toplevel):
     FIXED = {"IlmiyUnvon", "Kategoriya", "Semestr"}
 
-    def __init__(self, master, title, spec, values=None, computed=None):
+    def __init__(self, master, title, spec, values=None, computed=None, rules=None):
         super().__init__(master)
         self.title(title)
         self.resizable(False, False)
         self.result = None
         self.spec = spec
         self.vars = {}
+        self.widgets = {}
         self.computed = computed
+        self.rules = rules          # optional callable(self) to enable/disable dependent fields
+        self._guard = False
         values = values or {}
 
         frm = ttk.Frame(self, padding=16)
@@ -134,8 +150,8 @@ class FormDialog(tk.Toplevel):
             else:
                 w = ttk.Entry(frm, textvariable=var, width=30)
             w.grid(row=i, column=1, sticky="ew", pady=4)
-            if kind in ("int", "float"):
-                var.trace_add("write", lambda *_: self._refresh_preview())
+            self.widgets[key] = w
+            var.trace_add("write", lambda *_: self._on_change())
 
         self.preview = None
         if computed:
@@ -156,7 +172,22 @@ class FormDialog(tk.Toplevel):
         x = master.winfo_rootx() + (master.winfo_width() - self.winfo_width()) // 2
         y = master.winfo_rooty() + (master.winfo_height() - self.winfo_height()) // 3
         self.geometry(f"+{max(x,0)}+{max(y,0)}")
+        self._apply_rules()
         self.wait_window(self)
+
+    def _on_change(self):
+        if self._guard:
+            return
+        self._guard = True
+        try:
+            self._refresh_preview()
+            self._apply_rules()
+        finally:
+            self._guard = False
+
+    def _apply_rules(self):
+        if self.rules:
+            self.rules(self)
 
     def _collect(self):
         out = {}
@@ -670,7 +701,7 @@ class App(tk.Tk):
     def fan_add(self):
         d = FormDialog(self, "Yangi fan", self._fan_spec(),
                        {"Potok": 1, "Guruh": 1, "Kategoriya": "1", "TalimTuri": "Kunduzgi"},
-                       computed=self._fan_preview).result
+                       computed=self._fan_preview, rules=fan_rules).result
         if d:
             self.con.execute("INSERT INTO Fanlar(FanNomi,Yonalish,TalimTuri,Kategoriya,Semestr,"
                              "Maruza,Amaliyot,Potok,Guruh,Reyting) VALUES(?,?,?,?,?,?,?,?,?,?)",
@@ -684,7 +715,8 @@ class App(tk.Tk):
         if i is None:
             return
         r = self.con.execute("SELECT * FROM Fanlar WHERE FanID=?", (i,)).fetchone()
-        d = FormDialog(self, "Fanni tahrirlash", self._fan_spec(), dict(r), computed=self._fan_preview).result
+        d = FormDialog(self, "Fanni tahrirlash", self._fan_spec(), dict(r),
+                       computed=self._fan_preview, rules=fan_rules).result
         if d:
             self.con.execute("UPDATE Fanlar SET FanNomi=?,Yonalish=?,TalimTuri=?,Kategoriya=?,Semestr=?,"
                              "Maruza=?,Amaliyot=?,Potok=?,Guruh=?,Reyting=? WHERE FanID=?",
@@ -716,7 +748,8 @@ class App(tk.Tk):
                          lambda r: (r.get("FanNomi", "").strip(), r.get("Yonalish", "").strip(),
                                     r.get("TalimTuri", "").strip(), self._i(r.get("Kategoriya")),
                                     self._i(r.get("Semestr")), self._f(r.get("Maruza")), self._f(r.get("Amaliyot")),
-                                    self._i(r.get("Potok"), 1), self._i(r.get("Guruh"), 1), self._f(r.get("Reyting"))))
+                                    self._i(r.get("Potok"), 1), self._i(r.get("Guruh"), 1),
+                                    self._f(r.get("Reyting")) if r.get("TalimTuri", "").strip() == "Masofaviy" else 0.0))
 
     def fan_template(self):
         self._save_template(["FanNomi", "Yonalish", "TalimTuri", "Kategoriya", "Semestr",
