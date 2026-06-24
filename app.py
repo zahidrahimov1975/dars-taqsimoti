@@ -30,6 +30,29 @@ SEMESTR = [str(i) for i in range(1, 13)]
 TILLAR = ["O'zbek", "Rus", "Ingliz"]             # taught language
 ALL = "— hammasi —"
 
+# ----- UI theme (professional, calm institutional look) -----
+FONT = "Segoe UI"
+UI = {
+    "bg":          "#EDF1F7",   # window canvas (cool light slate)
+    "surface":     "#FFFFFF",   # header, tables, status
+    "ink":         "#1F2937",   # primary text
+    "muted":       "#6B7280",   # secondary text
+    "brand":       "#2563EB",   # primary accent
+    "brand_dark":  "#1D4ED8",
+    "brand_press": "#1A45C0",
+    "brand_soft":  "#E8F0FE",   # light brand tint (chips, selection)
+    "border":      "#D7DEEA",
+    "head_bg":     "#F2F6FC",   # table header row
+    "stripe":      "#F7F9FC",   # alternating row
+    "btn":         "#E7EBF2",   # secondary button
+    "btn_hover":   "#D9E0EC",
+    "btn_press":   "#CCD5E5",
+    "danger":      "#DC2626",
+    "danger_dark": "#B91C1C",
+    "danger_soft": "#FBE9E9",
+    "danger_hover":"#F6D6D6",
+}
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS Domlalar(
   DomlaID INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -150,7 +173,7 @@ class FormDialog(tk.Toplevel):
         self._guard = False
         values = values or {}
 
-        frm = ttk.Frame(self, padding=16)
+        frm = ttk.Frame(self, padding=(22, 18))
         frm.grid(sticky="nsew")
         for i, (key, label, kind, opts) in enumerate(spec):
             ttk.Label(frm, text=label).grid(row=i, column=0, sticky="w", pady=4, padx=(0, 12))
@@ -167,14 +190,14 @@ class FormDialog(tk.Toplevel):
 
         self.preview = None
         if computed:
-            self.preview = ttk.Label(frm, text="", foreground="#0a58ca")
+            self.preview = ttk.Label(frm, text="", foreground=UI["brand_dark"], font=(FONT, 9, "bold"))
             self.preview.grid(row=len(spec), column=0, columnspan=2, sticky="w", pady=(8, 0))
             self._refresh_preview()
 
         btns = ttk.Frame(frm)
         btns.grid(row=len(spec) + 1, column=0, columnspan=2, sticky="e", pady=(16, 0))
-        ttk.Button(btns, text="Saqlash", command=self._save).pack(side="right")
-        ttk.Button(btns, text="Bekor qilish", command=self.destroy).pack(side="right", padx=(0, 8))
+        ttk.Button(btns, text="Saqlash", style="Primary.TButton", command=self._save).pack(side="right")
+        ttk.Button(btns, text="Bekor qilish", style="Secondary.TButton", command=self.destroy).pack(side="right", padx=(0, 8))
 
         self.bind("<Return>", lambda e: self._save())
         self.bind("<Escape>", lambda e: self.destroy())
@@ -255,10 +278,10 @@ class TaqsimotDialog(tk.Toplevel):
         self.components = []              # parallel to cb_fan values
 
         pad = dict(padx=6, pady=5)
-        frm = ttk.Frame(self, padding=16)
+        frm = ttk.Frame(self, padding=(22, 18))
         frm.grid()
         ttk.Label(frm, text="PROFESSOR-O'QITUVCHI YUKLAMASI — DARS TAQSIMOTI",
-                  style="Title.TLabel").grid(row=0, column=0, columnspan=4, sticky="w", pady=(0, 12))
+                  style="Heading.TLabel").grid(row=0, column=0, columnspan=4, sticky="w", pady=(0, 12))
 
         ttk.Label(frm, text="Professor-o'qituvchi:").grid(row=1, column=0, sticky="w", **pad)
         self.cb_domla = ttk.Combobox(frm, state="readonly", width=54,
@@ -289,14 +312,14 @@ class TaqsimotDialog(tk.Toplevel):
         self.var_soat = tk.StringVar()
         self.ent_soat = ttk.Entry(frm, textvariable=self.var_soat, width=12)
         self.ent_soat.grid(row=7, column=1, sticky="w", **pad)
-        self.lbl_yuk = ttk.Label(frm, text="Yuklama: —", foreground="#0a58ca")
+        self.lbl_yuk = ttk.Label(frm, text="Yuklama: —", foreground=UI["brand_dark"], font=(FONT, 10, "bold"))
         self.lbl_yuk.grid(row=7, column=2, columnspan=2, sticky="w", **pad)
 
         btns = ttk.Frame(frm)
         btns.grid(row=8, column=0, columnspan=4, sticky="we", pady=(14, 0))
-        ttk.Button(btns, text="Filtrni tozalash", command=self._clear_filters).pack(side="left")
-        ttk.Button(btns, text="Saqlash", command=self._save).pack(side="right")
-        ttk.Button(btns, text="Bekor qilish", command=self.destroy).pack(side="right", padx=(0, 8))
+        ttk.Button(btns, text="Filtrni tozalash", style="Secondary.TButton", command=self._clear_filters).pack(side="left")
+        ttk.Button(btns, text="Saqlash", style="Primary.TButton", command=self._save).pack(side="right")
+        ttk.Button(btns, text="Bekor qilish", style="Secondary.TButton", command=self.destroy).pack(side="right", padx=(0, 8))
 
         for cb in (self.cb_yon, self.cb_talim, self.cb_sem):
             cb.bind("<<ComboboxSelected>>", lambda e: self._refresh_fan())
@@ -521,11 +544,21 @@ class App(tk.Tk):
         self._style()
         self.con = connect()
 
-        header = ttk.Frame(self, padding=(14, 10))
+        tk.Frame(self, height=3, background=UI["brand"]).pack(fill="x")
+        header = ttk.Frame(self, style="Header.TFrame", padding=(20, 13))
         header.pack(fill="x")
-        ttk.Label(header, text="Dars taqsimoti va o'qituvchilar yuklamasi",
-                  style="Title.TLabel").pack(side="left")
-        ttk.Button(header, text="❓  Yordam markazi", command=self.show_help).pack(side="right")
+        left = ttk.Frame(header, style="Header.TFrame")
+        left.pack(side="left")
+        ttk.Label(left, text="Dars taqsimoti", style="Title.TLabel").pack(anchor="w")
+        ttk.Label(left, text="O'qituvchilar yuklamasini rejalashtirish va hisobot",
+                  style="Subtitle.TLabel").pack(anchor="w")
+        right = ttk.Frame(header, style="Header.TFrame")
+        right.pack(side="right")
+        ttk.Button(right, text="Yordam markazi", style="Ghost.TButton",
+                   command=self.show_help).pack(anchor="e")
+        ttk.Label(right, text="Developed by Zaxid Raximov",
+                  style="Dev.TLabel").pack(anchor="e", pady=(6, 0))
+        tk.Frame(self, height=1, background=UI["border"]).pack(fill="x")
 
         self.nb = ttk.Notebook(self)
         self.nb.pack(fill="both", expand=True, padx=10, pady=(0, 8))
@@ -535,38 +568,119 @@ class App(tk.Tk):
         self._build_yuklama()
         self.nb.bind("<<NotebookTabChanged>>", lambda e: self._on_tab())
 
-        status = tk.Frame(self, relief="sunken", bd=1)
+        status = ttk.Frame(self, style="Status.TFrame", padding=(14, 6))
         status.pack(fill="x", side="bottom")
         self.status = tk.StringVar(value=f"Ma'lumotlar bazasi: {db_path()}")
-        ttk.Label(status, textvariable=self.status, anchor="w", padding=(8, 3)).pack(side="left")
-        ttk.Label(status, text="developed by Zaxid Raximov", foreground="#777",
-                  font=("Segoe UI", 8, "italic"), padding=(8, 3)).pack(side="right")
+        ttk.Label(status, textvariable=self.status, style="Status.TLabel", anchor="w").pack(side="left")
+        ttk.Label(status, text="developed by Zaxid Raximov", style="Credit.TLabel").pack(side="right")
+        tk.Frame(self, height=1, background=UI["border"]).pack(fill="x", side="bottom")
         self.refresh_all()
 
     def _style(self):
         st = ttk.Style()
-        st.configure("Title.TLabel", font=("Segoe UI", 15, "bold"))
-        st.configure("Treeview", rowheight=24)
-        st.configure("Treeview.Heading", font=("Segoe UI", 9, "bold"))
-        st.configure("TButton", padding=(9, 4))
+        u = UI
+        self.configure(background=u["bg"])
+        # dropdown list (combobox popup) colors
+        self.option_add("*TCombobox*Listbox.background", u["surface"])
+        self.option_add("*TCombobox*Listbox.foreground", u["ink"])
+        self.option_add("*TCombobox*Listbox.selectBackground", u["brand"])
+        self.option_add("*TCombobox*Listbox.selectForeground", "#FFFFFF")
+        self.option_add("*TCombobox*Listbox.font", (FONT, 10))
+
+        # base
+        st.configure(".", background=u["bg"], foreground=u["ink"], font=(FONT, 10))
+        st.configure("TFrame", background=u["bg"])
+        st.configure("TLabel", background=u["bg"], foreground=u["ink"], font=(FONT, 10))
+
+        # surfaces / text
+        st.configure("Header.TFrame", background=u["surface"])
+        st.configure("Status.TFrame", background=u["surface"])
+        st.configure("Card.TFrame", background=u["surface"])
+        st.configure("Title.TLabel", background=u["surface"], foreground=u["ink"], font=(FONT, 16, "bold"))
+        st.configure("Subtitle.TLabel", background=u["surface"], foreground=u["muted"], font=(FONT, 9))
+        st.configure("Status.TLabel", background=u["surface"], foreground=u["muted"], font=(FONT, 9))
+        st.configure("Credit.TLabel", background=u["surface"], foreground="#9AA3B2",
+                     font=(FONT, 8, "italic"))
+        st.configure("Dev.TLabel", background=u["surface"], foreground=u["muted"],
+                     font=(FONT, 14, "italic"))
+        st.configure("Heading.TLabel", background=u["bg"], foreground=u["ink"], font=(FONT, 14, "bold"))
+        st.configure("Muted.TLabel", background=u["bg"], foreground=u["muted"], font=(FONT, 9))
+        st.configure("Chip.TLabel", background=u["brand_soft"], foreground=u["brand_dark"],
+                     font=(FONT, 10, "bold"), padding=(11, 5))
+
+        # buttons – secondary is the default toolbar look
+        def button(name, bg, fg, hover, press, bold=False):
+            st.configure(name, font=(FONT, 10, "bold" if bold else "normal"),
+                         padding=(13, 6), relief="flat", background=bg, foreground=fg,
+                         bordercolor=bg, lightcolor=bg, darkcolor=bg, focuscolor=bg)
+            st.map(name, background=[("active", hover), ("pressed", press), ("disabled", "#EDEFF3")],
+                   foreground=[("disabled", "#A7AEBA")])
+        button("TButton", u["btn"], u["ink"], u["btn_hover"], u["btn_press"])
+        button("Secondary.TButton", u["btn"], u["ink"], u["btn_hover"], u["btn_press"])
+        button("Primary.TButton", u["brand"], "#FFFFFF", u["brand_dark"], u["brand_press"], bold=True)
+        button("Danger.TButton", u["danger_soft"], u["danger_dark"], u["danger_hover"], "#F0C4C4")
+        st.configure("Ghost.TButton", font=(FONT, 10), padding=(12, 6), relief="flat",
+                     background=u["surface"], foreground=u["brand_dark"],
+                     bordercolor=u["surface"], lightcolor=u["surface"], darkcolor=u["surface"],
+                     focuscolor=u["surface"])
+        st.map("Ghost.TButton", background=[("active", u["brand_soft"]), ("pressed", u["brand_soft"])])
+
+        # notebook
+        st.configure("TNotebook", background=u["bg"], borderwidth=0, tabmargins=(4, 6, 4, 0))
+        st.configure("TNotebook.Tab", font=(FONT, 10), padding=(18, 9),
+                     background="#DFE5EE", foreground=u["muted"], borderwidth=0)
+        st.map("TNotebook.Tab",
+               background=[("selected", u["surface"]), ("active", "#E9EDF4")],
+               foreground=[("selected", u["brand_dark"]), ("active", u["ink"])],
+               font=[("selected", (FONT, 10, "bold"))])
+
+        # treeview
+        st.configure("Treeview", background=u["surface"], fieldbackground=u["surface"],
+                     foreground=u["ink"], rowheight=30, borderwidth=0, font=(FONT, 10))
+        st.configure("Treeview.Heading", background=u["head_bg"], foreground=u["ink"],
+                     font=(FONT, 10, "bold"), relief="flat", padding=(8, 9), borderwidth=0)
+        st.map("Treeview.Heading", background=[("active", "#E7EEF8")])
+        st.map("Treeview", background=[("selected", u["brand_soft"])],
+               foreground=[("selected", u["ink"])])
+
+        # entry / combobox
+        st.configure("TEntry", fieldbackground=u["surface"], foreground=u["ink"], padding=6,
+                     bordercolor=u["border"], lightcolor=u["border"], darkcolor=u["border"],
+                     insertwidth=1, selectbackground=u["brand_soft"], selectforeground=u["ink"])
+        st.map("TEntry", bordercolor=[("focus", u["brand"])],
+               lightcolor=[("focus", u["brand"])], darkcolor=[("focus", u["brand"])])
+        st.configure("TCombobox", fieldbackground=u["surface"], foreground=u["ink"], padding=6,
+                     bordercolor=u["border"], lightcolor=u["border"], darkcolor=u["border"], arrowsize=15)
+        st.map("TCombobox",
+               fieldbackground=[("readonly", u["surface"]), ("disabled", "#F1F3F8")],
+               foreground=[("disabled", "#9AA3B2")],
+               bordercolor=[("focus", u["brand"])],
+               lightcolor=[("focus", u["brand"])], darkcolor=[("focus", u["brand"])])
+
+        # scrollbars – slim, neutral
+        for s in ("Vertical.TScrollbar", "Horizontal.TScrollbar"):
+            st.configure(s, background="#C8D0DD", troughcolor=u["bg"], borderwidth=0,
+                         arrowcolor=u["muted"], relief="flat")
+            st.map(s, background=[("active", "#B4BFD0")])
 
     # ---------- generic helpers ----------
     def _make_tab(self, title):
-        f = ttk.Frame(self.nb, padding=8)
+        f = ttk.Frame(self.nb, padding=(14, 14))
         self.nb.add(f, text=title)
         bar = ttk.Frame(f)
-        bar.pack(fill="x", pady=(0, 6))
+        bar.pack(fill="x", pady=(0, 10))
         body = ttk.Frame(f)
         body.pack(fill="both", expand=True)
         return f, bar, body
 
     def _add_search(self, bar, var):
-        ttk.Label(bar, text="🔍 Qidirish:").pack(side="left", padx=(16, 4))
-        e = ttk.Entry(bar, textvariable=var, width=24)
+        ttk.Label(bar, text="Qidirish:", style="Muted.TLabel").pack(side="left", padx=(16, 6))
+        e = ttk.Entry(bar, textvariable=var, width=26)
         e.pack(side="left")
 
     def _make_tree(self, parent, columns, widths, anchors=None):
-        wrap = ttk.Frame(parent)
+        wrap = tk.Frame(parent, background=UI["surface"], highlightthickness=1,
+                        highlightbackground=UI["border"], highlightcolor=UI["border"], bd=0)
         wrap.pack(fill="both", expand=True)
         tree = ttk.Treeview(wrap, columns=columns, show="headings", selectmode="browse")
         vs = ttk.Scrollbar(wrap, orient="vertical", command=tree.yview)
@@ -582,7 +696,7 @@ class App(tk.Tk):
             tree.heading(c, text=c, command=lambda col=c: self._sort_tree(tree, col))
             tree.column(c, width=w, anchor=anchors.get(c, "w"),
                         stretch=(c in ("F.I.Sh.", "Fan nomi", "Professor-o'qituvchi (F.I.Sh.)", "Fan")))
-        tree.tag_configure("odd", background="#f5f7fa")
+        tree.tag_configure("odd", background=UI["stripe"])
         tree._columns = list(columns)
         tree._sort = {"col": None, "asc": True}
         return tree
@@ -694,14 +808,13 @@ class App(tk.Tk):
     # ================= DOMLALAR =================
     def _build_domlalar(self):
         _, bar, body = self._make_tab("  Professor-O'qituvchilar  ")
-        ttk.Button(bar, text="+ Qo'shish", command=self.dom_add).pack(side="left")
-        ttk.Button(bar, text="Tahrirlash", command=self.dom_edit).pack(side="left", padx=4)
-        ttk.Button(bar, text="O'chirish", command=self.dom_del).pack(side="left")
-        ttk.Button(bar, text="CSV import", command=self.dom_import).pack(side="left", padx=(12, 0))
-        ttk.Button(bar, text="Shablon", command=self.dom_template).pack(side="left", padx=4)
+        ttk.Button(bar, text="+ Qo'shish", style="Primary.TButton", command=self.dom_add).pack(side="left")
+        ttk.Button(bar, text="Tahrirlash", style="Secondary.TButton", command=self.dom_edit).pack(side="left", padx=6)
+        ttk.Button(bar, text="O'chirish", style="Danger.TButton", command=self.dom_del).pack(side="left")
+        ttk.Button(bar, text="CSV import", style="Secondary.TButton", command=self.dom_import).pack(side="left", padx=(16, 0))
+        ttk.Button(bar, text="Shablon", style="Secondary.TButton", command=self.dom_template).pack(side="left", padx=6)
         self.dom_total = tk.StringVar(value="Jami meyor: 0")
-        ttk.Label(bar, textvariable=self.dom_total, font=("Segoe UI", 10, "bold"),
-                  foreground="#0a58ca").pack(side="right", padx=(8, 10))
+        ttk.Label(bar, textvariable=self.dom_total, style="Chip.TLabel").pack(side="right", padx=(8, 2))
         self.dom_q = tk.StringVar()
         self._add_search(bar, self.dom_q)
         self.dom_q.trace_add("write", lambda *_: self.load_domlalar())
@@ -788,15 +901,14 @@ class App(tk.Tk):
     # ================= FANLAR =================
     def _build_fanlar(self):
         _, bar, body = self._make_tab("  Fanlar yuklamasi  ")
-        ttk.Button(bar, text="+ Qo'shish", command=self.fan_add).pack(side="left")
-        ttk.Button(bar, text="Tahrirlash", command=self.fan_edit).pack(side="left", padx=4)
-        ttk.Button(bar, text="O'chirish", command=self.fan_del).pack(side="left")
-        ttk.Button(bar, text="CSV import", command=self.fan_import).pack(side="left", padx=(12, 0))
-        ttk.Button(bar, text="Shablon", command=self.fan_template).pack(side="left", padx=4)
-        ttk.Button(bar, text="Takror tozalash", command=self.fan_dedup).pack(side="left", padx=4)
+        ttk.Button(bar, text="+ Qo'shish", style="Primary.TButton", command=self.fan_add).pack(side="left")
+        ttk.Button(bar, text="Tahrirlash", style="Secondary.TButton", command=self.fan_edit).pack(side="left", padx=6)
+        ttk.Button(bar, text="O'chirish", style="Danger.TButton", command=self.fan_del).pack(side="left")
+        ttk.Button(bar, text="CSV import", style="Secondary.TButton", command=self.fan_import).pack(side="left", padx=(16, 0))
+        ttk.Button(bar, text="Shablon", style="Secondary.TButton", command=self.fan_template).pack(side="left", padx=6)
+        ttk.Button(bar, text="Takror tozalash", style="Secondary.TButton", command=self.fan_dedup).pack(side="left")
         self.fan_total = tk.StringVar(value="Jami soatlar: 0")
-        ttk.Label(bar, textvariable=self.fan_total, font=("Segoe UI", 10, "bold"),
-                  foreground="#0a58ca").pack(side="right", padx=(8, 10))
+        ttk.Label(bar, textvariable=self.fan_total, style="Chip.TLabel").pack(side="right", padx=(8, 2))
         self.fan_q = tk.StringVar()
         self._add_search(bar, self.fan_q)
         self.fan_q.trace_add("write", lambda *_: self.load_fanlar())
@@ -981,10 +1093,10 @@ class App(tk.Tk):
     # ================= TAQSIMOT =================
     def _build_taqsimot(self):
         _, bar, body = self._make_tab("  Taqsimot  ")
-        ttk.Button(bar, text="+ Qo'shish", command=self.taq_add).pack(side="left")
-        ttk.Button(bar, text="Tahrirlash", command=self.taq_edit).pack(side="left", padx=4)
-        ttk.Button(bar, text="O'chirish", command=self.taq_del).pack(side="left")
-        ttk.Button(bar, text="CSV ga eksport", command=self.taq_export).pack(side="left", padx=(12, 0))
+        ttk.Button(bar, text="+ Qo'shish", style="Primary.TButton", command=self.taq_add).pack(side="left")
+        ttk.Button(bar, text="Tahrirlash", style="Secondary.TButton", command=self.taq_edit).pack(side="left", padx=6)
+        ttk.Button(bar, text="O'chirish", style="Danger.TButton", command=self.taq_del).pack(side="left")
+        ttk.Button(bar, text="CSV ga eksport", style="Secondary.TButton", command=self.taq_export).pack(side="left", padx=(16, 0))
         self.taq_q = tk.StringVar()
         self._add_search(bar, self.taq_q)
         self.taq_q.trace_add("write", lambda *_: self.load_taqsimot())
@@ -1074,13 +1186,13 @@ class App(tk.Tk):
     # ================= YUKLAMA (report) =================
     def _build_yuklama(self):
         _, bar, body = self._make_tab("  Yuklama (hisobot)  ")
-        ttk.Button(bar, text="Yangilash", command=self.load_yuklama).pack(side="left")
-        ttk.Button(bar, text="CSV ga eksport", command=self.yuk_export).pack(side="left", padx=8)
+        ttk.Button(bar, text="Yangilash", style="Primary.TButton", command=self.load_yuklama).pack(side="left")
+        ttk.Button(bar, text="CSV ga eksport", style="Secondary.TButton", command=self.yuk_export).pack(side="left", padx=8)
         self.yuk_q = tk.StringVar()
         self._add_search(bar, self.yuk_q)
         self.yuk_q.trace_add("write", lambda *_: self.load_yuklama())
         self.yuk_summary = tk.StringVar()
-        ttk.Label(bar, textvariable=self.yuk_summary, foreground="#444").pack(side="right")
+        ttk.Label(bar, textvariable=self.yuk_summary, style="Muted.TLabel").pack(side="right", padx=(8, 2))
         cols = ["F.I.Sh.", "Stavka", "Meyor (jami)", "Ma'ruza", "Amaliyot", "Reyting",
                 "Jami berilgan", "Farq", "Bajarilish %"]
         w = [260, 65, 100, 80, 80, 70, 100, 80, 100]
@@ -1144,22 +1256,25 @@ class App(tk.Tk):
         except Exception:
             pass
 
-        frm = ttk.Frame(win, padding=10)
+        win.configure(background=UI["bg"])
+        frm = ttk.Frame(win, padding=12)
         frm.pack(fill="both", expand=True)
-        txt = tk.Text(frm, wrap="word", padx=14, pady=10, background="white",
-                      relief="flat", cursor="arrow", font=("Segoe UI", 10))
+        txt = tk.Text(frm, wrap="word", padx=18, pady=14, background=UI["surface"],
+                      relief="flat", cursor="arrow", font=(FONT, 10), foreground=UI["ink"],
+                      highlightthickness=1, highlightbackground=UI["border"],
+                      highlightcolor=UI["border"], borderwidth=0)
         vs = ttk.Scrollbar(frm, orient="vertical", command=txt.yview)
         txt.configure(yscrollcommand=vs.set)
         vs.pack(side="right", fill="y")
         txt.pack(side="left", fill="both", expand=True)
 
-        txt.tag_configure("h1", font=("Segoe UI", 14, "bold"), foreground="#0a58ca",
-                          spacing1=14, spacing3=6)
-        txt.tag_configure("h2", font=("Segoe UI", 11, "bold"), foreground="#222",
-                          spacing1=8, spacing3=3)
-        txt.tag_configure("p", font=("Segoe UI", 10), foreground="#333", spacing3=3)
-        txt.tag_configure("b", font=("Segoe UI", 10), foreground="#333",
-                          lmargin1=18, lmargin2=34, spacing3=2)
+        txt.tag_configure("h1", font=(FONT, 14, "bold"), foreground=UI["brand_dark"],
+                          spacing1=16, spacing3=7)
+        txt.tag_configure("h2", font=(FONT, 11, "bold"), foreground=UI["ink"],
+                          spacing1=9, spacing3=3)
+        txt.tag_configure("p", font=(FONT, 10), foreground="#374151", spacing3=3, spacing2=2)
+        txt.tag_configure("b", font=(FONT, 10), foreground="#374151",
+                          lmargin1=18, lmargin2=34, spacing3=3, spacing2=2)
 
         content = [
             ("h1", "Bu dastur nima uchun?"),
@@ -1239,7 +1354,7 @@ class App(tk.Tk):
             txt.insert("end", ("•  " + text if tag == "b" else text) + "\n", tag)
         txt.config(state="disabled")
 
-        ttk.Button(win, text="Yopish", command=win.destroy).pack(pady=(0, 10))
+        ttk.Button(win, text="Yopish", style="Secondary.TButton", command=win.destroy).pack(pady=(2, 12))
         win.bind("<Escape>", lambda e: win.destroy())
 
 
