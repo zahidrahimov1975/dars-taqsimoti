@@ -621,7 +621,7 @@ class App(tk.Tk):
         except OSError as e:
             messagebox.showerror("Xato", str(e))
 
-    def _csv_import(self, table, expected, insert_sql, row_to_tuple, dedup=None):
+    def _csv_import(self, table, expected, insert_sql, row_to_tuple, preprocess=None):
         path = filedialog.askopenfilename(filetypes=[("CSV", "*.csv"), ("Hamma fayllar", "*.*")])
         if not path:
             return
@@ -631,43 +631,24 @@ class App(tk.Tk):
         except (OSError, csv.Error) as e:
             messagebox.showerror("Xato", f"CSV o'qishda xato:\n{e}")
             return
-
-        def norm(v):
-            return str(v).strip().lower() if v is not None else ""
-        seen = set()
-        if dedup:                       # collect keys already present in the table
-            for er in self.con.execute(dedup["existing_sql"]):
-                seen.add(tuple(norm(er[c]) for c in dedup["key_cols"]))
-
-        rows, skipped = [], 0
-        for raw in raw_rows:
-            t = row_to_tuple(raw)
-            if not t or not t[0]:
-                continue
-            if dedup:                   # skip duplicate courses (in the file or already saved)
-                k = tuple(norm(raw.get(c, "")) for c in dedup["key_cols"])
-                if k in seen:
-                    skipped += 1
-                    continue
-                seen.add(k)
-            rows.append(t)
-
+        note = ""
+        if preprocess:
+            raw_rows, note = preprocess(raw_rows)
+        rows = [t for t in (row_to_tuple(r) for r in raw_rows) if t and t[0]]
         if not rows:
-            extra = f"\n({skipped} ta takror o'tkazib yuborildi.)" if skipped else ""
-            messagebox.showwarning("Bo'sh", f"Qo'shiladigan yangi yozuv topilmadi.{extra}\n"
-                                   f"Kutilgan ustunlar: {', '.join(expected)}")
+            messagebox.showwarning("Bo'sh", f"Mos qatorlar topilmadi.\nKutilgan ustunlar: {', '.join(expected)}")
             return
         msg = f"{len(rows)} ta yozuv \"{table}\" jadvaliga qo'shilsinmi?"
-        if skipped:
-            msg += f"\n({skipped} ta takror o'tkazib yuboriladi.)"
+        if note:
+            msg += f"\n{note}"
         if not messagebox.askyesno("Import", msg):
             return
         self.con.executemany(insert_sql, rows)
         self.con.commit()
         self.refresh_all()
         done = f"{len(rows)} ta yozuv qo'shildi."
-        if skipped:
-            done += f"\n{skipped} ta takror o'tkazib yuborildi."
+        if note:
+            done += f"\n{note}"
         messagebox.showinfo("Tayyor", done)
 
     # ================= DOMLALAR =================
@@ -870,6 +851,35 @@ class App(tk.Tk):
             self.con.commit()
             self.refresh_all()
 
+    def _fan_label_dups(self, raw_rows):
+        """Keep duplicate courses but append the differing field(s) in brackets to the name,
+        e.g. two 'Statistika' rows differing only in Reyting become
+        'Statistika (Reyting: 6)' and 'Statistika (Reyting: 7)'."""
+        DIFF = [("Kategoriya", "Kat"), ("Maruza", "Ma'ruza"), ("Amaliyot", "Amaliyot"),
+                ("Potok", "Potok"), ("Guruh", "Guruh"), ("Reyting", "Reyting")]
+
+        def idk(r):
+            return (r.get("FanNomi", "").strip().lower(), r.get("Yonalish", "").strip().lower(),
+                    r.get("TalimTuri", "").strip().lower(), str(r.get("Semestr", "")).strip())
+        groups = {}
+        for r in raw_rows:
+            groups.setdefault(idk(r), []).append(r)
+        labeled = 0
+        for members in groups.values():
+            if len(members) < 2:
+                continue
+            differing = [(f, lbl) for f, lbl in DIFF
+                         if len({(m.get(f) or "").strip() for m in members}) > 1]
+            for i, m in enumerate(members, 1):
+                if differing:
+                    parts = [f"{lbl}: {(m.get(f) or '').strip() or '0'}" for f, lbl in differing]
+                    m["FanNomi"] = m.get("FanNomi", "").strip() + " (" + ", ".join(parts) + ")"
+                else:
+                    m["FanNomi"] = m.get("FanNomi", "").strip() + f" (nusxa {i})"
+                labeled += 1
+        note = f"{labeled} ta takror fan nomiga farqi qavs ichida qo'shildi." if labeled else ""
+        return raw_rows, note
+
     def fan_import(self):
         cols = ["FanNomi", "Yonalish", "TalimTuri", "Kategoriya", "Semestr",
                 "Maruza", "Amaliyot", "Potok", "Guruh", "Reyting"]
@@ -881,8 +891,7 @@ class App(tk.Tk):
                                     self._i(r.get("Semestr")), self._f(r.get("Maruza")), self._f(r.get("Amaliyot")),
                                     self._i(r.get("Potok"), 1), self._i(r.get("Guruh"), 1),
                                     self._f(r.get("Reyting")) if r.get("TalimTuri", "").strip() == "Masofaviy" else 0.0),
-                         dedup={"key_cols": ["FanNomi", "Yonalish", "TalimTuri", "Semestr"],
-                                "existing_sql": "SELECT FanNomi, Yonalish, TalimTuri, Semestr FROM Fanlar"})
+                         preprocess=self._fan_label_dups)
 
     def fan_dedup(self):
         """Remove duplicate courses (same Nomi+Yonalish+TalimTuri+Semestr), keeping the first."""
