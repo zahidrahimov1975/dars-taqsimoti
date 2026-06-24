@@ -539,11 +539,38 @@ class App(tk.Tk):
         wrap.columnconfigure(0, weight=1)
         anchors = anchors or {}
         for c, w in zip(columns, widths):
-            tree.heading(c, text=c)
+            tree.heading(c, text=c, command=lambda col=c: self._sort_tree(tree, col))
             tree.column(c, width=w, anchor=anchors.get(c, "w"),
                         stretch=(c in ("F.I.Sh.", "Fan nomi", "Domla (F.I.Sh.)", "Fan")))
         tree.tag_configure("odd", background="#f5f7fa")
+        tree._columns = list(columns)
+        tree._sort = {"col": None, "asc": True}
         return tree
+
+    def _sort_tree(self, tree, col):
+        asc = not (tree._sort.get("col") == col and tree._sort.get("asc"))
+        tree._sort = {"col": col, "asc": asc}
+        uses_odd = any("odd" in tree.item(i, "tags") for i in tree.get_children(""))
+
+        def key(iid):
+            raw = tree.set(iid, col)
+            num = (raw or "").strip().replace("%", "").replace(",", ".")
+            try:
+                return (0, float(num))
+            except ValueError:
+                return (1, (raw or "").lower())
+
+        for idx, iid in enumerate(sorted(tree.get_children(""), key=key, reverse=not asc)):
+            tree.move(iid, "", idx)
+        for c in tree._columns:
+            arrow = "  ▲" if (c == col and asc) else "  ▼" if c == col else ""
+            tree.heading(c, text=c + arrow)
+        if uses_odd:
+            for idx, iid in enumerate(tree.get_children("")):
+                tags = [t for t in tree.item(iid, "tags") if t != "odd"]
+                if idx % 2:
+                    tags.append("odd")
+                tree.item(iid, tags=tags)
 
     @staticmethod
     def _fill(tree, rows):
@@ -553,6 +580,10 @@ class App(tk.Tk):
             tree.insert("", "end", iid=str(iid), values=vals, tags=("odd",) if i % 2 else ())
         if sel and tree.exists(sel[0]):
             tree.selection_set(sel[0])
+        if hasattr(tree, "_columns"):          # data reloaded -> back to default order
+            tree._sort = {"col": None, "asc": True}
+            for c in tree._columns:
+                tree.heading(c, text=c)
 
     @staticmethod
     def _selected_id(tree):
@@ -590,27 +621,54 @@ class App(tk.Tk):
         except OSError as e:
             messagebox.showerror("Xato", str(e))
 
-    def _csv_import(self, table, expected, insert_sql, row_to_tuple):
+    def _csv_import(self, table, expected, insert_sql, row_to_tuple, dedup=None):
         path = filedialog.askopenfilename(filetypes=[("CSV", "*.csv"), ("Hamma fayllar", "*.*")])
         if not path:
             return
         try:
             with open(path, newline="", encoding="utf-8-sig") as fh:
-                reader = csv.DictReader(fh)
-                rows = [row_to_tuple({k.strip(): v for k, v in r.items()}) for r in reader]
+                raw_rows = [{k.strip(): v for k, v in r.items()} for r in csv.DictReader(fh)]
         except (OSError, csv.Error) as e:
             messagebox.showerror("Xato", f"CSV o'qishda xato:\n{e}")
             return
-        rows = [r for r in rows if r and r[0]]
+
+        def norm(v):
+            return str(v).strip().lower() if v is not None else ""
+        seen = set()
+        if dedup:                       # collect keys already present in the table
+            for er in self.con.execute(dedup["existing_sql"]):
+                seen.add(tuple(norm(er[c]) for c in dedup["key_cols"]))
+
+        rows, skipped = [], 0
+        for raw in raw_rows:
+            t = row_to_tuple(raw)
+            if not t or not t[0]:
+                continue
+            if dedup:                   # skip duplicate courses (in the file or already saved)
+                k = tuple(norm(raw.get(c, "")) for c in dedup["key_cols"])
+                if k in seen:
+                    skipped += 1
+                    continue
+                seen.add(k)
+            rows.append(t)
+
         if not rows:
-            messagebox.showwarning("Bo'sh", f"Mos qatorlar topilmadi.\nKutilgan ustunlar: {', '.join(expected)}")
+            extra = f"\n({skipped} ta takror o'tkazib yuborildi.)" if skipped else ""
+            messagebox.showwarning("Bo'sh", f"Qo'shiladigan yangi yozuv topilmadi.{extra}\n"
+                                   f"Kutilgan ustunlar: {', '.join(expected)}")
             return
-        if not messagebox.askyesno("Import", f"{len(rows)} ta yozuv \"{table}\" jadvaliga qo'shilsinmi?"):
+        msg = f"{len(rows)} ta yozuv \"{table}\" jadvaliga qo'shilsinmi?"
+        if skipped:
+            msg += f"\n({skipped} ta takror o'tkazib yuboriladi.)"
+        if not messagebox.askyesno("Import", msg):
             return
         self.con.executemany(insert_sql, rows)
         self.con.commit()
         self.refresh_all()
-        messagebox.showinfo("Tayyor", f"{len(rows)} ta yozuv qo'shildi.")
+        done = f"{len(rows)} ta yozuv qo'shildi."
+        if skipped:
+            done += f"\n{skipped} ta takror o'tkazib yuborildi."
+        messagebox.showinfo("Tayyor", done)
 
     # ================= DOMLALAR =================
     def _build_domlalar(self):
@@ -706,6 +764,10 @@ class App(tk.Tk):
         ttk.Button(bar, text="O'chirish", command=self.fan_del).pack(side="left")
         ttk.Button(bar, text="CSV import", command=self.fan_import).pack(side="left", padx=(12, 0))
         ttk.Button(bar, text="Shablon", command=self.fan_template).pack(side="left", padx=4)
+        ttk.Button(bar, text="Takror tozalash", command=self.fan_dedup).pack(side="left", padx=4)
+        self.fan_total = tk.StringVar(value="Jami soatlar: 0")
+        ttk.Label(bar, textvariable=self.fan_total, font=("Segoe UI", 10, "bold"),
+                  foreground="#0a58ca").pack(side="right", padx=(8, 10))
         self.fan_q = tk.StringVar()
         self._add_search(bar, self.fan_q)
         self.fan_q.trace_add("write", lambda *_: self.load_fanlar())
@@ -720,14 +782,18 @@ class App(tk.Tk):
     def load_fanlar(self):
         q = (self.fan_q.get() if hasattr(self, "fan_q") else "").strip().lower()
         rows = []
-        for r in self.con.execute("SELECT * FROM Fanlar ORDER BY FanNomi COLLATE NOCASE"):
+        total = 0
+        for r in self.con.execute("SELECT * FROM Fanlar ORDER BY FanID"):
             if q and q not in (r["FanNomi"] or "").lower() and q not in (r["Yonalish"] or "").lower():
                 continue
             _, _, jami = fan_totals(r["Maruza"], r["Amaliyot"], r["Potok"], r["Guruh"], r["Reyting"])
+            total += jami or 0
             rows.append((r["FanID"], (
                 r["FanID"], r["FanNomi"], r["Yonalish"], r["TalimTuri"], g(r["Semestr"]),
                 g(r["Maruza"]), g(r["Amaliyot"]), g(r["Potok"]), g(r["Guruh"]), g(r["Reyting"]), g(jami))))
         self._fill(self.t_fan, rows)
+        if hasattr(self, "fan_total"):
+            self.fan_total.set(f"Jami soatlar: {g(total)}")
 
     def _fan_spec(self):
         return [("FanNomi", "Fan nomi", "text", None),
@@ -746,11 +812,28 @@ class App(tk.Tk):
         mj, aj, js = fan_totals(d.get("Maruza"), d.get("Amaliyot"), d.get("Potok"), d.get("Guruh"), d.get("Reyting"))
         return f"Ma'ruza jami={g(mj)} · Amaliyot jami={g(aj)} · Jami soat={g(js)}"
 
+    def _fan_exists(self, nomi, yon, talim, sem, exclude_id=None):
+        key = ((nomi or "").strip().lower(), (yon or "").strip().lower(),
+               (talim or "").strip().lower(), str(int(sem or 0)))
+        for r in self.con.execute("SELECT FanID, FanNomi, Yonalish, TalimTuri, Semestr FROM Fanlar"):
+            if exclude_id and r["FanID"] == exclude_id:
+                continue
+            rk = ((r["FanNomi"] or "").strip().lower(), (r["Yonalish"] or "").strip().lower(),
+                  (r["TalimTuri"] or "").strip().lower(), str(int(r["Semestr"] or 0)))
+            if rk == key:
+                return True
+        return False
+
     def fan_add(self):
         d = FormDialog(self, "Yangi fan", self._fan_spec(),
                        {"Potok": 1, "Guruh": 1, "Kategoriya": "1", "TalimTuri": "Kunduzgi"},
                        computed=self._fan_preview, rules=fan_rules).result
         if d:
+            if self._fan_exists(d["FanNomi"], d["Yonalish"], d["TalimTuri"], d["Semestr"]):
+                if not messagebox.askyesno("Takror fan",
+                        "Nomi, yo'nalishi, ta'lim shakli va semestri bir xil fan allaqachon mavjud.\n"
+                        "Baribir qo'shilsinmi?"):
+                    return
             self.con.execute("INSERT INTO Fanlar(FanNomi,Yonalish,TalimTuri,Kategoriya,Semestr,"
                              "Maruza,Amaliyot,Potok,Guruh,Reyting) VALUES(?,?,?,?,?,?,?,?,?,?)",
                              (d["FanNomi"], d["Yonalish"], d["TalimTuri"], int(d["Kategoriya"] or 0),
@@ -797,7 +880,35 @@ class App(tk.Tk):
                                     r.get("TalimTuri", "").strip(), self._i(r.get("Kategoriya")),
                                     self._i(r.get("Semestr")), self._f(r.get("Maruza")), self._f(r.get("Amaliyot")),
                                     self._i(r.get("Potok"), 1), self._i(r.get("Guruh"), 1),
-                                    self._f(r.get("Reyting")) if r.get("TalimTuri", "").strip() == "Masofaviy" else 0.0))
+                                    self._f(r.get("Reyting")) if r.get("TalimTuri", "").strip() == "Masofaviy" else 0.0),
+                         dedup={"key_cols": ["FanNomi", "Yonalish", "TalimTuri", "Semestr"],
+                                "existing_sql": "SELECT FanNomi, Yonalish, TalimTuri, Semestr FROM Fanlar"})
+
+    def fan_dedup(self):
+        """Remove duplicate courses (same Nomi+Yonalish+TalimTuri+Semestr), keeping the first."""
+        groups = {}
+        for r in self.con.execute("SELECT FanID, FanNomi, Yonalish, TalimTuri, Semestr FROM Fanlar ORDER BY FanID"):
+            k = ((r["FanNomi"] or "").strip().lower(), (r["Yonalish"] or "").strip().lower(),
+                 (r["TalimTuri"] or "").strip().lower(), str(int(r["Semestr"] or 0)))
+            groups.setdefault(k, []).append(r["FanID"])
+        dup_ids = [fid for ids in groups.values() for fid in ids[1:]]
+        if not dup_ids:
+            messagebox.showinfo("Toza", "Takror fan topilmadi.")
+            return
+        qm = ",".join("?" * len(dup_ids))
+        n_assign = self.con.execute(f"SELECT COUNT(*) c FROM Taqsimot WHERE FanID IN ({qm})", dup_ids).fetchone()["c"]
+        warn = (f"{len(dup_ids)} ta takror fan topildi va o'chiriladi "
+                "(har bir takror fanning birinchisi qoldiriladi).")
+        if n_assign:
+            warn += f"\nUlarga bog'langan {n_assign} ta taqsimot yozuvi ham o'chiriladi."
+        warn += "\n\nDavom etilsinmi?"
+        if not messagebox.askyesno("Takror fanlarni tozalash", warn):
+            return
+        self.con.execute(f"DELETE FROM Taqsimot WHERE FanID IN ({qm})", dup_ids)
+        self.con.execute(f"DELETE FROM Fanlar WHERE FanID IN ({qm})", dup_ids)
+        self.con.commit()
+        self.refresh_all()
+        messagebox.showinfo("Tayyor", f"{len(dup_ids)} ta takror fan o'chirildi.")
 
     def fan_template(self):
         self._save_template(["FanNomi", "Yonalish", "TalimTuri", "Kategoriya", "Semestr",
@@ -811,6 +922,7 @@ class App(tk.Tk):
         ttk.Button(bar, text="+ Qo'shish", command=self.taq_add).pack(side="left")
         ttk.Button(bar, text="Tahrirlash", command=self.taq_edit).pack(side="left", padx=4)
         ttk.Button(bar, text="O'chirish", command=self.taq_del).pack(side="left")
+        ttk.Button(bar, text="CSV ga eksport", command=self.taq_export).pack(side="left", padx=(12, 0))
         self.taq_q = tk.StringVar()
         self._add_search(bar, self.taq_q)
         self.taq_q.trace_add("write", lambda *_: self.load_taqsimot())
@@ -872,6 +984,27 @@ class App(tk.Tk):
             self.con.commit()
             self.refresh_all()
 
+    def taq_export(self):
+        path = filedialog.asksaveasfilename(defaultextension=".csv",
+                                            filetypes=[("CSV", "*.csv")], initialfile="taqsimot.csv")
+        if not path:
+            return
+        sql = """SELECT d.FIO, f.FanNomi, f.Yonalish, f.TalimTuri, f.Semestr, t.TurSoat, t.Soat
+                 FROM Taqsimot t
+                 LEFT JOIN Domlalar d ON d.DomlaID=t.DomlaID
+                 LEFT JOIN Fanlar f   ON f.FanID=t.FanID
+                 ORDER BY d.FIO COLLATE NOCASE, f.FanNomi COLLATE NOCASE"""
+        try:
+            with open(path, "w", newline="", encoding="utf-8-sig") as fh:
+                w = csv.writer(fh)
+                w.writerow(["Domla", "Fan", "Yonalish", "TalimTuri", "Semestr", "Turi", "Soat"])
+                for r in self.con.execute(sql):
+                    w.writerow([r["FIO"] or "", r["FanNomi"] or "", r["Yonalish"] or "",
+                                r["TalimTuri"] or "", g(r["Semestr"]), r["TurSoat"], g(r["Soat"])])
+            messagebox.showinfo("Tayyor", f"Taqsimot saqlandi:\n{path}")
+        except OSError as e:
+            messagebox.showerror("Xato", str(e))
+
     # ================= YUKLAMA (report) =================
     def _build_yuklama(self):
         _, bar, body = self._make_tab("  Yuklama (hisobot)  ")
@@ -887,9 +1020,6 @@ class App(tk.Tk):
         w = [260, 65, 100, 80, 80, 70, 100, 80, 100]
         an = {c: "e" for c in cols if c != "F.I.Sh."}
         self.t_yuk = self._make_tree(body, cols, w, an)
-        self.t_yuk.tag_configure("full", background="#d8f5dd")
-        self.t_yuk.tag_configure("partial", background="#fff3cd")
-        self.t_yuk.tag_configure("low", background="#f8d7da")
 
     def load_yuklama(self):
         q = (self.yuk_q.get() if hasattr(self, "yuk_q") else "").strip().lower()
@@ -902,10 +1032,9 @@ class App(tk.Tk):
             if q and q not in d["fio"].lower():
                 continue
             shown += 1
-            tag = "full" if d["pct"] >= 100 else "partial" if d["pct"] >= 70 else "low"
             self.t_yuk.insert("", "end", values=(
                 d["fio"], g(d["stavka"]), g(d["norm"]), g(d["maruza"]), g(d["amaliyot"]),
-                g(d["reyting"]), g(d["jami"]), g(d["diff"]), f"{d['pct']:.0f}%"), tags=(tag,))
+                g(d["reyting"]), g(d["jami"]), g(d["diff"]), f"{d['pct']:.0f}%"))
         self.yuk_summary.set(f"Ko'rsatilgan: {shown}   |   Umumiy meyor: {g(tot_norm)} soat   "
                              f"|   Berilgan: {g(tot_assigned)} soat")
 
