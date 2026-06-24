@@ -225,20 +225,22 @@ class FormDialog(tk.Toplevel):
 
 # ===================== Taqsimot assignment dialog (like the Access 'Domla yuklamasi' form) =====================
 class TaqsimotDialog(tk.Toplevel):
-    def __init__(self, master, con, values=None):
+    def __init__(self, master, con, values=None, editing_id=None):
         super().__init__(master)
         self.title("Taqsimot yozuvi — Domla yuklamasi")
         self.resizable(False, False)
         self.con = con
         self.result = None
+        self.editing_id = editing_id      # TaqsimotID being edited (excluded from assigned-hours)
 
         self.domlalar = con.execute(
             "SELECT DomlaID, FIO FROM Domlalar ORDER BY FIO COLLATE NOCASE").fetchall()
         self.fanlar = con.execute(
-            "SELECT FanID, FanNomi, Yonalish, TalimTuri, Semestr, Maruza, Amaliyot, Reyting "
+            "SELECT FanID, FanNomi, Yonalish, TalimTuri, Semestr, Maruza, Amaliyot, Reyting, Potok, Guruh "
             "FROM Fanlar ORDER BY FanNomi COLLATE NOCASE").fetchall()
         self.domla_ids = [r["DomlaID"] for r in self.domlalar]
-        self.fan_filtered = []
+        self.assigned_hours = self._load_assigned_hours()
+        self.components = []              # parallel to cb_fan values
 
         pad = dict(padx=6, pady=5)
         frm = ttk.Frame(self, padding=16)
@@ -247,7 +249,7 @@ class TaqsimotDialog(tk.Toplevel):
                   style="Title.TLabel").grid(row=0, column=0, columnspan=4, sticky="w", pady=(0, 12))
 
         ttk.Label(frm, text="Domla:").grid(row=1, column=0, sticky="w", **pad)
-        self.cb_domla = ttk.Combobox(frm, state="readonly", width=46,
+        self.cb_domla = ttk.Combobox(frm, state="readonly", width=54,
                                      values=[short_name(r["FIO"]) for r in self.domlalar])
         self.cb_domla.grid(row=1, column=1, columnspan=3, sticky="we", **pad)
 
@@ -265,13 +267,11 @@ class TaqsimotDialog(tk.Toplevel):
         self.cb_sem = ttk.Combobox(frm, state="readonly", width=10, values=[ALL] + self._distinct_sem())
         self.cb_sem.grid(row=4, column=1, sticky="w", **pad)
 
-        ttk.Label(frm, text="Fan:").grid(row=5, column=0, sticky="w", **pad)
-        self.cb_fan = ttk.Combobox(frm, state="readonly", width=46)
+        ttk.Label(frm, text="Fan / yuklama:").grid(row=5, column=0, sticky="w", **pad)
+        self.cb_fan = ttk.Combobox(frm, state="readonly", width=54)
         self.cb_fan.grid(row=5, column=1, columnspan=3, sticky="we", **pad)
-
-        ttk.Label(frm, text="Soat turi:").grid(row=6, column=0, sticky="w", **pad)
-        self.cb_turi = ttk.Combobox(frm, state="readonly", width=16, values=list(TUR_SOAT))
-        self.cb_turi.grid(row=6, column=1, sticky="w", **pad)
+        ttk.Label(frm, text="(Ma'ruza, Amaliyot va Reyting alohida; biriktirilgani ro'yxatdan chiqadi)",
+                  foreground="#888").grid(row=6, column=1, columnspan=3, sticky="w", padx=6)
 
         ttk.Label(frm, text="Soat:").grid(row=7, column=0, sticky="w", **pad)
         self.var_soat = tk.StringVar()
@@ -288,12 +288,10 @@ class TaqsimotDialog(tk.Toplevel):
         for cb in (self.cb_yon, self.cb_talim, self.cb_sem):
             cb.bind("<<ComboboxSelected>>", lambda e: self._refresh_fan())
         self.cb_fan.bind("<<ComboboxSelected>>", lambda e: self._on_fan())
-        self.cb_turi.bind("<<ComboboxSelected>>", lambda e: self._autofill_soat())
 
         self.cb_yon.set(ALL)
         self.cb_talim.set(ALL)
         self.cb_sem.set(ALL)
-        self.cb_turi.set("Maruza")
         self._refresh_fan()
         if values:
             self._prefill(values)
@@ -316,6 +314,17 @@ class TaqsimotDialog(tk.Toplevel):
     def _distinct_sem(self):
         return [str(x) for x in sorted({int(r["Semestr"]) for r in self.fanlar if r["Semestr"]})]
 
+    def _load_assigned_hours(self):
+        """Hours already assigned per (FanID, TurSoat) across all teachers, so a component
+        can be split among several teachers and only drops out when fully allocated."""
+        if self.editing_id:
+            cur = self.con.execute("SELECT FanID, TurSoat, COALESCE(SUM(Soat),0) s FROM Taqsimot "
+                                   "WHERE TaqsimotID<>? GROUP BY FanID, TurSoat", (self.editing_id,))
+        else:
+            cur = self.con.execute("SELECT FanID, TurSoat, COALESCE(SUM(Soat),0) s FROM Taqsimot "
+                                   "GROUP BY FanID, TurSoat")
+        return {(r["FanID"], r["TurSoat"]): r["s"] for r in cur}
+
     def _match(self, r):
         y, t, s = self.cb_yon.get(), self.cb_talim.get(), self.cb_sem.get()
         if y != ALL and (r["Yonalish"] or "") != y:
@@ -328,53 +337,61 @@ class TaqsimotDialog(tk.Toplevel):
                 return False
         return True
 
-    def _fan_label(self, r):
-        bits = []
-        if r["Yonalish"]:
-            bits.append(r["Yonalish"])
+    def _build_components(self):
+        """One entry per course-component. Total hours = Maruza×Potok, Amaliyot×Guruh, Reyting.
+        A component stays in the list (showing remaining hours) until fully assigned, so it can
+        be split among several teachers."""
+        comps = []
+        for r in self.fanlar:
+            if not self._match(r):
+                continue
+            items = [("Maruza", (r["Maruza"] or 0) * (r["Potok"] or 1)),
+                     ("Amaliyot", (r["Amaliyot"] or 0) * (r["Guruh"] or 1))]
+            if (r["TalimTuri"] or "") == "Masofaviy":       # Reyting only for distance education
+                items.append(("Reyting", r["Reyting"] or 0))
+            for turi, total in items:
+                if total <= 0:
+                    continue
+                remaining = total - self.assigned_hours.get((r["FanID"], turi), 0)
+                if remaining <= 0:                          # fully assigned -> hide it
+                    continue
+                comps.append({"FanID": r["FanID"], "FanNomi": r["FanNomi"], "TurSoat": turi,
+                              "total": total, "remaining": remaining, "Soat": remaining, "row": r})
+        return comps
+
+    def _comp_label(self, c):
+        r = c["row"]
+        extra = []
         if r["TalimTuri"]:
-            bits.append(r["TalimTuri"])
+            extra.append(r["TalimTuri"])
         if r["Semestr"]:
-            bits.append(f'{int(r["Semestr"])}-sem')
-        tail = (" — " + ", ".join(bits)) if bits else ""
-        return f'{r["FanNomi"]}{tail}'
+            extra.append(f'{int(r["Semestr"])}-sem')
+        tail = (" · " + ", ".join(extra)) if extra else ""
+        if abs(c["remaining"] - c["total"]) < 1e-9:
+            hrs = f'{g(c["total"])} soat'
+        else:
+            hrs = f'qoldi {g(c["remaining"])}/{g(c["total"])} soat'
+        return f'{c["FanNomi"]} — {c["TurSoat"]} ({hrs}){tail}'
 
     def _refresh_fan(self):
-        self.fan_filtered = [r for r in self.fanlar if self._match(r)]
-        self.cb_fan["values"] = [self._fan_label(r) for r in self.fan_filtered]
+        self.components = self._build_components()
+        self.cb_fan["values"] = [self._comp_label(c) for c in self.components]
         self.cb_fan.set("")
-        self.cb_turi["values"] = list(TUR_SOAT)
-        if self.cb_turi.get() not in TUR_SOAT:
-            self.cb_turi.set("Maruza")
+        self.var_soat.set("")
         self.lbl_yuk.config(text="Yuklama: —")
 
-    def _current_fan(self):
+    def _current(self):
         i = self.cb_fan.current()
-        if i < 0 or i >= len(self.fan_filtered):
+        if i < 0 or i >= len(self.components):
             return None
-        return self.fan_filtered[i]
+        return self.components[i]
 
     def _on_fan(self):
-        r = self._current_fan()
-        if not r:
+        c = self._current()
+        if not c:
             return
-        opts = list(TUR_SOAT)
-        if (r["TalimTuri"] or "") == "Masofaviy":     # Reyting only for distance education
-            opts.append("Reyting")
-        cur = self.cb_turi.get()
-        self.cb_turi["values"] = opts
-        if cur not in opts:
-            self.cb_turi.set("Maruza")
-        self._autofill_soat()
-
-    def _autofill_soat(self):
-        r = self._current_fan()
-        if not r:
-            return
-        field = {"Maruza": "Maruza", "Amaliyot": "Amaliyot", "Reyting": "Reyting"}.get(self.cb_turi.get())
-        val = (r[field] if field else 0) or 0
-        self.var_soat.set(g(val))
-        self.lbl_yuk.config(text=f"Yuklama: {g(val)} soat")
+        self.var_soat.set(g(c["remaining"]))
+        self.lbl_yuk.config(text=f"{c['TurSoat']}: jami {g(c['total'])} soat, qoldi {g(c['remaining'])} soat")
 
     def _clear_filters(self):
         self.cb_yon.set(ALL)
@@ -391,12 +408,11 @@ class TaqsimotDialog(tk.Toplevel):
             self.cb_talim.set(fan["TalimTuri"] or ALL)
             self.cb_sem.set(str(int(fan["Semestr"])) if fan["Semestr"] else ALL)
             self._refresh_fan()
-            ids = [r["FanID"] for r in self.fan_filtered]
-            if v["FanID"] in ids:
-                self.cb_fan.current(ids.index(v["FanID"]))
-                self._on_fan()
-        if v.get("TurSoat") and v["TurSoat"] in self.cb_turi["values"]:
-            self.cb_turi.set(v["TurSoat"])
+            for idx, c in enumerate(self.components):
+                if c["FanID"] == v.get("FanID") and c["TurSoat"] == v.get("TurSoat"):
+                    self.cb_fan.current(idx)
+                    self._on_fan()
+                    break
         if v.get("Soat") is not None:
             self.var_soat.set(g(v["Soat"]))
 
@@ -405,12 +421,9 @@ class TaqsimotDialog(tk.Toplevel):
         if di < 0:
             messagebox.showerror("Xato", "Domla tanlanishi shart.", parent=self)
             return
-        fan = self._current_fan()
-        if not fan:
-            messagebox.showerror("Xato", "Fan tanlanishi shart.", parent=self)
-            return
-        if not self.cb_turi.get():
-            messagebox.showerror("Xato", "Soat turi tanlanishi shart.", parent=self)
+        c = self._current()
+        if not c:
+            messagebox.showerror("Xato", "Fan / yuklama tanlanishi shart.", parent=self)
             return
         try:
             txt = self.var_soat.get().strip().replace(",", ".")
@@ -418,8 +431,16 @@ class TaqsimotDialog(tk.Toplevel):
         except ValueError:
             messagebox.showerror("Xato", "Soat raqam bo'lishi kerak.", parent=self)
             return
-        self.result = {"DomlaID": self.domla_ids[di], "FanID": fan["FanID"],
-                       "TurSoat": self.cb_turi.get(), "Soat": soat}
+        if soat <= 0:
+            messagebox.showerror("Xato", "Soat 0 dan katta bo'lishi kerak.", parent=self)
+            return
+        if soat > c["remaining"] + 1e-9:
+            if not messagebox.askyesno("Diqqat",
+                    f"Bu komponent uchun qolgan soat: {g(c['remaining'])}.\n"
+                    f"Siz {g(soat)} soat kiritdingiz. Baribir saqlansinmi?", parent=self):
+                return
+        self.result = {"DomlaID": self.domla_ids[di], "FanID": c["FanID"],
+                       "TurSoat": c["TurSoat"], "Soat": soat}
         self.destroy()
 
 
@@ -808,7 +829,7 @@ class App(tk.Tk):
         if i is None:
             return
         r = self.con.execute("SELECT * FROM Taqsimot WHERE TaqsimotID=?", (i,)).fetchone()
-        d = TaqsimotDialog(self, self.con, dict(r)).result
+        d = TaqsimotDialog(self, self.con, dict(r), editing_id=r["TaqsimotID"]).result
         if d:
             self.con.execute("UPDATE Taqsimot SET DomlaID=?,FanID=?,TurSoat=?,Soat=? WHERE TaqsimotID=?",
                              (d["DomlaID"], d["FanID"], d["TurSoat"], d["Soat"], i))
