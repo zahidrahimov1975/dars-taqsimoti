@@ -275,7 +275,8 @@ class TaqsimotDialog(tk.Toplevel):
 
         ttk.Label(frm, text="Soat:").grid(row=7, column=0, sticky="w", **pad)
         self.var_soat = tk.StringVar()
-        ttk.Entry(frm, textvariable=self.var_soat, width=12).grid(row=7, column=1, sticky="w", **pad)
+        self.ent_soat = ttk.Entry(frm, textvariable=self.var_soat, width=12)
+        self.ent_soat.grid(row=7, column=1, sticky="w", **pad)
         self.lbl_yuk = ttk.Label(frm, text="Yuklama: —", foreground="#0a58ca")
         self.lbl_yuk.grid(row=7, column=2, columnspan=2, sticky="w", **pad)
 
@@ -338,25 +339,35 @@ class TaqsimotDialog(tk.Toplevel):
         return True
 
     def _build_components(self):
-        """One entry per course-component. Total hours = Maruza×Potok, Amaliyot×Guruh, Reyting.
-        A component stays in the list (showing remaining hours) until fully assigned, so it can
-        be split among several teachers."""
+        """One entry per course-component, with type-specific rules:
+          - Maruza  : one professor for the whole course (total = Maruza), NOT splittable.
+          - Amaliyot: total = Amaliyot × Guruh (groups), splittable across teachers (per group).
+          - Reyting : total = Reyting, splittable; only for Masofaviy, eligible teachers only.
+        A splittable component stays (showing remaining hours) until fully assigned."""
         comps = []
         for r in self.fanlar:
             if not self._match(r):
                 continue
-            items = [("Maruza", (r["Maruza"] or 0) * (r["Potok"] or 1)),
-                     ("Amaliyot", (r["Amaliyot"] or 0) * (r["Guruh"] or 1))]
-            if (r["TalimTuri"] or "") == "Masofaviy":       # Reyting only for distance education
-                items.append(("Reyting", r["Reyting"] or 0))
-            for turi, total in items:
+            specs = [("Maruza", (r["Maruza"] or 0), False, (r["Maruza"] or 0)),
+                     ("Amaliyot", (r["Amaliyot"] or 0) * (r["Guruh"] or 1), True, (r["Amaliyot"] or 0))]
+            if (r["TalimTuri"] or "") == "Masofaviy":        # Reyting only for distance education
+                specs.append(("Reyting", (r["Reyting"] or 0), True, (r["Reyting"] or 0)))
+            for turi, total, splittable, unit in specs:
                 if total <= 0:
                     continue
-                remaining = total - self.assigned_hours.get((r["FanID"], turi), 0)
-                if remaining <= 0:                          # fully assigned -> hide it
-                    continue
+                done = self.assigned_hours.get((r["FanID"], turi), 0)
+                if not splittable:
+                    if done > 0:                             # lecture already taken -> hide
+                        continue
+                    remaining, default = total, total
+                else:
+                    remaining = total - done
+                    if remaining <= 0:                       # fully assigned -> hide
+                        continue
+                    default = min(unit, remaining) if unit else remaining
                 comps.append({"FanID": r["FanID"], "FanNomi": r["FanNomi"], "TurSoat": turi,
-                              "total": total, "remaining": remaining, "Soat": remaining, "row": r})
+                              "total": total, "remaining": remaining, "default": default,
+                              "splittable": splittable, "row": r})
         return comps
 
     def _comp_label(self, c):
@@ -367,10 +378,10 @@ class TaqsimotDialog(tk.Toplevel):
         if r["Semestr"]:
             extra.append(f'{int(r["Semestr"])}-sem')
         tail = (" · " + ", ".join(extra)) if extra else ""
-        if abs(c["remaining"] - c["total"]) < 1e-9:
-            hrs = f'{g(c["total"])} soat'
-        else:
+        if c["splittable"] and abs(c["remaining"] - c["total"]) > 1e-9:
             hrs = f'qoldi {g(c["remaining"])}/{g(c["total"])} soat'
+        else:
+            hrs = f'{g(c["total"])} soat'
         return f'{c["FanNomi"]} — {c["TurSoat"]} ({hrs}){tail}'
 
     def _refresh_fan(self):
@@ -378,6 +389,7 @@ class TaqsimotDialog(tk.Toplevel):
         self.cb_fan["values"] = [self._comp_label(c) for c in self.components]
         self.cb_fan.set("")
         self.var_soat.set("")
+        self.ent_soat.config(state="normal")
         self.lbl_yuk.config(text="Yuklama: —")
 
     def _current(self):
@@ -390,8 +402,13 @@ class TaqsimotDialog(tk.Toplevel):
         c = self._current()
         if not c:
             return
-        self.var_soat.set(g(c["remaining"]))
-        self.lbl_yuk.config(text=f"{c['TurSoat']}: jami {g(c['total'])} soat, qoldi {g(c['remaining'])} soat")
+        self.var_soat.set(g(c["default"]))
+        if c["splittable"]:
+            self.ent_soat.config(state="normal")
+            self.lbl_yuk.config(text=f"{c['TurSoat']}: jami {g(c['total'])} soat, qoldi {g(c['remaining'])} soat")
+        else:
+            self.ent_soat.config(state="disabled")
+            self.lbl_yuk.config(text=f"{c['TurSoat']}: {g(c['total'])} soat — bitta professor")
 
     def _clear_filters(self):
         self.cb_yon.set(ALL)
@@ -438,6 +455,16 @@ class TaqsimotDialog(tk.Toplevel):
             if not messagebox.askyesno("Diqqat",
                     f"Bu komponent uchun qolgan soat: {g(c['remaining'])}.\n"
                     f"Siz {g(soat)} soat kiritdingiz. Baribir saqlansinmi?", parent=self):
+                return
+        if c["TurSoat"] == "Reyting":
+            eligible = self.con.execute(
+                "SELECT 1 FROM Taqsimot WHERE DomlaID=? AND FanID=? AND TurSoat IN ('Maruza','Amaliyot') "
+                "LIMIT 1", (self.domla_ids[di], c["FanID"])).fetchone()
+            if not eligible:
+                messagebox.showerror("Xato",
+                    "Reyting faqat shu fanning Ma'ruza yoki Amaliyotini o'qitadigan domlaga "
+                    "biriktiriladi.\nAvval o'sha domlaga shu fandan Ma'ruza yoki Amaliyot biriktiring.",
+                    parent=self)
                 return
         self.result = {"DomlaID": self.domla_ids[di], "FanID": c["FanID"],
                        "TurSoat": c["TurSoat"], "Soat": soat}
