@@ -525,6 +525,7 @@ class App(tk.Tk):
         header.pack(fill="x")
         ttk.Label(header, text="Dars taqsimoti va o'qituvchilar yuklamasi",
                   style="Title.TLabel").pack(side="left")
+        ttk.Button(header, text="❓  Yordam markazi", command=self.show_help).pack(side="right")
 
         self.nb = ttk.Notebook(self)
         self.nb.pack(fill="both", expand=True, padx=10, pady=(0, 8))
@@ -534,9 +535,12 @@ class App(tk.Tk):
         self._build_yuklama()
         self.nb.bind("<<NotebookTabChanged>>", lambda e: self._on_tab())
 
+        status = tk.Frame(self, relief="sunken", bd=1)
+        status.pack(fill="x", side="bottom")
         self.status = tk.StringVar(value=f"Ma'lumotlar bazasi: {db_path()}")
-        ttk.Label(self, textvariable=self.status, anchor="w",
-                  relief="sunken", padding=(8, 3)).pack(fill="x", side="bottom")
+        ttk.Label(status, textvariable=self.status, anchor="w", padding=(8, 3)).pack(side="left")
+        ttk.Label(status, text="developed by Zaxid Raximov", foreground="#777",
+                  font=("Segoe UI", 8, "italic"), padding=(8, 3)).pack(side="right")
         self.refresh_all()
 
     def _style(self):
@@ -1128,6 +1132,115 @@ class App(tk.Tk):
         self.load_taqsimot()
         if hasattr(self, "t_yuk"):
             self.load_yuklama()
+
+    # ---------- help centre ----------
+    def show_help(self):
+        win = tk.Toplevel(self)
+        win.title("Yordam markazi — Dasturdan foydalanish")
+        win.geometry("780x620")
+        win.transient(self)
+        try:
+            win.geometry(f"+{self.winfo_rootx() + 70}+{self.winfo_rooty() + 50}")
+        except Exception:
+            pass
+
+        frm = ttk.Frame(win, padding=10)
+        frm.pack(fill="both", expand=True)
+        txt = tk.Text(frm, wrap="word", padx=14, pady=10, background="white",
+                      relief="flat", cursor="arrow", font=("Segoe UI", 10))
+        vs = ttk.Scrollbar(frm, orient="vertical", command=txt.yview)
+        txt.configure(yscrollcommand=vs.set)
+        vs.pack(side="right", fill="y")
+        txt.pack(side="left", fill="both", expand=True)
+
+        txt.tag_configure("h1", font=("Segoe UI", 14, "bold"), foreground="#0a58ca",
+                          spacing1=14, spacing3=6)
+        txt.tag_configure("h2", font=("Segoe UI", 11, "bold"), foreground="#222",
+                          spacing1=8, spacing3=3)
+        txt.tag_configure("p", font=("Segoe UI", 10), foreground="#333", spacing3=3)
+        txt.tag_configure("b", font=("Segoe UI", 10), foreground="#333",
+                          lmargin1=18, lmargin2=34, spacing3=2)
+
+        content = [
+            ("h1", "Bu dastur nima uchun?"),
+            ("p", "Dastur professor-o'qituvchilarning dars yuklamasini (taqsimotini) rejalashtirish "
+                  "uchun mo'ljallangan. Siz o'qituvchilar va fanlar ro'yxatini kiritasiz, so'ngra "
+                  "har bir fanni (ma'ruza, amaliyot, reyting) o'qituvchilarga biriktirasiz. Dastur "
+                  "har bir o'qituvchining jami yuklamasini va me'yorga nisbatan bajarilishini "
+                  "o'zi hisoblab beradi."),
+
+            ("h1", "Asosiy bo'limlar (yuqoridagi 4 ta varaq)"),
+            ("b", "Professor-O'qituvchilar — o'qituvchilar ro'yxati (F.I.Sh., ilmiy unvon, stavka, me'yor)."),
+            ("b", "Fanlar yuklamasi — fanlar ro'yxati (nomi, yo'nalishi, ta'lim turi, tili, ma'ruza/amaliyot soatlari)."),
+            ("b", "Taqsimot — fanlarni o'qituvchilarga biriktirish."),
+            ("b", "Yuklama (hisobot) — har bir o'qituvchining jami soatlari va bajarilish foizi."),
+
+            ("h1", "1-qadam: O'qituvchilarni kiritish"),
+            ("p", "Yuqoridan «Professor-O'qituvchilar» varag'ini tanlang."),
+            ("b", "Bittalab kiritish uchun «+ Qo'shish» tugmasini bosing."),
+            ("b", "Ko'p bo'lsa: «Shablon» tugmasi bilan tayyor CSV namunasini yuklab oling, uni "
+                  "Excel'da to'ldiring (namuna qatorini o'chiring), so'ng «CSV import» orqali yuklang."),
+            ("b", "Tahrirlash uchun qatorni ikki marta bosing yoki «Tahrirlash» tugmasini bosing. "
+                  "O'chirish uchun qatorni tanlab «O'chirish»."),
+
+            ("h1", "2-qadam: Fanlarni kiritish"),
+            ("p", "«Fanlar yuklamasi» varag'iga o'ting va xuddi shu tarzda fanlarni kiriting."),
+            ("b", "Har bir fan uchun: nomi, yo'nalishi, ta'lim turi (Kunduzgi/Sirtqi/Masofaviy/Kechki), "
+                  "tili, ma'ruza va amaliyot soatlari, potok (oqim soni) va guruh soni."),
+            ("b", "Reyting faqat Masofaviy fanlar uchun kiritiladi."),
+            ("b", "«Jami soat» ustuni avtomatik hisoblanadi: Ma'ruza×Potok + Amaliyot×Guruh + Reyting."),
+            ("b", "O'ng yuqorida «Jami soatlar» — barcha fanlarning umumiy soati ko'rsatiladi."),
+
+            ("h1", "Til (o'qitish tili)"),
+            ("p", "Har bir fanning tili bor: O'zbek, Rus yoki Ingliz. Til fan nomi yonida qavs ichida "
+                  "ko'rsatiladi, masalan «Ekonometrika (rus)». Agar bitta fan bir nechta tilda o'qitilsa, "
+                  "uni har bir til uchun alohida qator qilib kiriting — ular alohida fan sifatida qaraladi."),
+
+            ("h1", "3-qadam: Taqsimot (dars biriktirish)"),
+            ("p", "«Taqsimot» varag'ida «+ Qo'shish» tugmasini bosing. Ochilgan oynada:"),
+            ("b", "Avval professor-o'qituvchini tanlang."),
+            ("b", "Kerak bo'lsa, yo'nalish / ta'lim shakli / semestr filtrlari bilan ro'yxatni qisqartiring."),
+            ("b", "«Fan / yuklama» maydoniga yozib qidiring — masalan «ekon» deb yozsangiz, mos fanlar "
+                  "chiqadi. So'ng ro'yxatdan tanlang yoki Enter bosing."),
+            ("b", "«Soat» avtomatik to'ldiriladi; kerak bo'lsa o'zgartiring. So'ng «Saqlash»."),
+
+            ("h2", "Biriktirish qoidalari"),
+            ("b", "Ma'ruza — butun fan uchun bitta o'qituvchi o'qiydi (bo'linmaydi). Biriktirilgach, ro'yxatdan chiqadi."),
+            ("b", "Amaliyot — guruhlar bo'yicha bo'linadi (jami = Amaliyot × Guruh). Bir guruhni bir "
+                  "o'qituvchiga, boshqasini boshqasiga berish mumkin. To'liq tarqatilmaguncha ro'yxatda "
+                  "«qoldi X/Y soat» ko'rinishida turadi."),
+            ("b", "Bitta o'qituvchi ham ma'ruzani, ham amaliyotni o'qishi mumkin."),
+            ("b", "Reyting — faqat shu fanning ma'ruzasi yoki amaliyotini o'qiydigan o'qituvchiga biriktiriladi."),
+
+            ("h1", "4-bo'lim: Yuklama (hisobot)"),
+            ("p", "Bu yerda har bir o'qituvchining me'yori, biriktirilgan soatlari, farqi va bajarilish "
+                  "foizi ko'rsatiladi. Yangilash uchun «Yangilash» tugmasini bosing."),
+            ("p", "«Professor-O'qituvchilar» varag'ida o'ng yuqorida «Jami meyor» — barcha o'qituvchilarning "
+                  "umumiy me'yori ko'rsatiladi."),
+
+            ("h1", "Foydali imkoniyatlar"),
+            ("b", "Saralash — istalgan ustun sarlavhasini bosing, ma'lumot o'sha ustun bo'yicha tartiblanadi "
+                  "(yana bossangiz — teskari tartib). Sonlar son bo'yicha, matn alifbo bo'yicha saralanadi."),
+            ("b", "Qidirish — har bir varaqdagi «Qidirish» maydoniga yozib, kerakli yozuvni tez toping."),
+            ("b", "CSV eksport — «Taqsimot» va «Yuklama» bo'limlarida ma'lumotni Excel uchun CSV faylga saqlash mumkin."),
+            ("b", "Takror fanlar — bir xil fan ikki marta kiritilgan bo'lsa, «Takror tozalash» tugmasi ularni "
+                  "tozalaydi. CSV import paytida takror fanlarning farqi (masalan reyting) avtomatik qavs ichida belgilanadi."),
+
+            ("h1", "Ma'lumotlar saqlanadimi? (Muhim)"),
+            ("p", "Ha. Har bir o'zgarish darhol saqlanadi — alohida «saqlash» tugmasi kerak emas. Dasturni "
+                  "yopib qayta ochsangiz, hamma narsa joyida turadi."),
+            ("b", "Barcha ma'lumot «dars_taqsimoti.db» faylida saqlanadi — u dastur (exe) bilan bir papkada turadi."),
+            ("b", "MUHIM: yuklab olingan ZIP faylni avval haqiqiy papkaga (masalan, Ishchi stol) chiqaring, "
+                  "keyin exe'ni o'sha papkadan oching. ZIP ichidan to'g'ridan-to'g'ri ochmang — aks holda "
+                  "ma'lumot vaqtinchalik papkaga yoziladi va o'chib ketishi mumkin."),
+            ("b", "Zaxira uchun «dars_taqsimoti.db» faylini vaqti-vaqti bilan boshqa joyga (USB yoki Drive'ga) nusxalang."),
+        ]
+        for tag, text in content:
+            txt.insert("end", ("•  " + text if tag == "b" else text) + "\n", tag)
+        txt.config(state="disabled")
+
+        ttk.Button(win, text="Yopish", command=win.destroy).pack(pady=(0, 10))
+        win.bind("<Escape>", lambda e: win.destroy())
 
 
 def main():
