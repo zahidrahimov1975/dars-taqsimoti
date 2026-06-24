@@ -308,7 +308,7 @@ class TaqsimotDialog(tk.Toplevel):
         ttk.Label(frm, text="(yozib qidiring → tanlang yoki Enter; Ma'ruza/Amaliyot/Reyting alohida; biriktirilgani chiqadi)",
                   foreground="#888").grid(row=6, column=1, columnspan=3, sticky="w", padx=6)
 
-        ttk.Label(frm, text="Soat:").grid(row=7, column=0, sticky="w", **pad)
+        ttk.Label(frm, text="Soat (avtomatik):").grid(row=7, column=0, sticky="w", **pad)
         self.var_soat = tk.StringVar()
         self.ent_soat = ttk.Entry(frm, textvariable=self.var_soat, width=12)
         self.ent_soat.grid(row=7, column=1, sticky="w", **pad)
@@ -462,11 +462,10 @@ class TaqsimotDialog(tk.Toplevel):
         if not c:
             return
         self.var_soat.set(g(c["default"]))
+        self.ent_soat.config(state="disabled")        # hours are set automatically, not editable
         if c["splittable"]:
-            self.ent_soat.config(state="normal")
             self.lbl_yuk.config(text=f"{c['TurSoat']}: jami {g(c['total'])} soat, qoldi {g(c['remaining'])} soat")
         else:
-            self.ent_soat.config(state="disabled")
             self.lbl_yuk.config(text=f"{c['TurSoat']}: {g(c['total'])} soat — bitta professor")
 
     def _clear_filters(self):
