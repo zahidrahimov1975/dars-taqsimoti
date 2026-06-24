@@ -572,7 +572,6 @@ class App(tk.Tk):
         status.pack(fill="x", side="bottom")
         self.status = tk.StringVar(value=f"Ma'lumotlar bazasi: {db_path()}")
         ttk.Label(status, textvariable=self.status, style="Status.TLabel", anchor="w").pack(side="left")
-        ttk.Label(status, text="developed by Zaxid Raximov", style="Credit.TLabel").pack(side="right")
         tk.Frame(self, height=1, background=UI["border"]).pack(fill="x", side="bottom")
         self.refresh_all()
 
