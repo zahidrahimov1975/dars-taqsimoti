@@ -27,6 +27,7 @@ YONALISH = ["Buxgalteriya Hisobi", "Iqtisodiyot", "Biznesni Boshqarish"]
 TALIM_TURI = ["Kunduzgi", "Sirtqi", "Masofaviy", "Kechki"]
 TUR_SOAT = ["Maruza", "Amaliyot"]                # + "Reyting" only when subject is Masofaviy
 SEMESTR = [str(i) for i in range(1, 13)]
+TILLAR = ["O'zbek", "Rus", "Ingliz"]             # taught language
 ALL = "— hammasi —"
 
 SCHEMA = """
@@ -38,7 +39,8 @@ CREATE TABLE IF NOT EXISTS Fanlar(
   FanID INTEGER PRIMARY KEY AUTOINCREMENT,
   FanNomi TEXT NOT NULL, Yonalish TEXT, TalimTuri TEXT, Kategoriya INTEGER,
   Semestr INTEGER, Maruza REAL DEFAULT 0, Amaliyot REAL DEFAULT 0,
-  Potok INTEGER DEFAULT 1, Guruh INTEGER DEFAULT 1, Reyting REAL DEFAULT 0);
+  Potok INTEGER DEFAULT 1, Guruh INTEGER DEFAULT 1, Reyting REAL DEFAULT 0,
+  Til TEXT DEFAULT 'O''zbek');
 CREATE TABLE IF NOT EXISTS Taqsimot(
   TaqsimotID INTEGER PRIMARY KEY AUTOINCREMENT,
   DomlaID INTEGER, FanID INTEGER, TurSoat TEXT, Soat REAL DEFAULT 0,
@@ -60,7 +62,17 @@ def connect(path=None):
     con.row_factory = sqlite3.Row
     con.execute("PRAGMA foreign_keys = ON")
     con.executescript(SCHEMA)
+    _migrate(con)
     return con
+
+
+def _migrate(con):
+    """Add columns introduced after a database was first created."""
+    cols = {r["name"] for r in con.execute("PRAGMA table_info(Fanlar)")}
+    if "Til" not in cols:
+        con.execute("ALTER TABLE Fanlar ADD COLUMN Til TEXT DEFAULT 'O''zbek'")
+        con.execute("UPDATE Fanlar SET Til='O''zbek' WHERE Til IS NULL OR Til=''")
+        con.commit()
 
 
 # ----- Computed values (the empty 'Jami' columns in Access) -----
@@ -227,7 +239,7 @@ class FormDialog(tk.Toplevel):
 class TaqsimotDialog(tk.Toplevel):
     def __init__(self, master, con, values=None, editing_id=None):
         super().__init__(master)
-        self.title("Taqsimot yozuvi — Domla yuklamasi")
+        self.title("Taqsimot yozuvi — Professor-o'qituvchi yuklamasi")
         self.resizable(False, False)
         self.con = con
         self.result = None
@@ -236,7 +248,7 @@ class TaqsimotDialog(tk.Toplevel):
         self.domlalar = con.execute(
             "SELECT DomlaID, FIO FROM Domlalar ORDER BY FIO COLLATE NOCASE").fetchall()
         self.fanlar = con.execute(
-            "SELECT FanID, FanNomi, Yonalish, TalimTuri, Semestr, Maruza, Amaliyot, Reyting, Potok, Guruh "
+            "SELECT FanID, FanNomi, Yonalish, TalimTuri, Semestr, Maruza, Amaliyot, Reyting, Potok, Guruh, Til "
             "FROM Fanlar ORDER BY FanNomi COLLATE NOCASE").fetchall()
         self.domla_ids = [r["DomlaID"] for r in self.domlalar]
         self.assigned_hours = self._load_assigned_hours()
@@ -245,10 +257,10 @@ class TaqsimotDialog(tk.Toplevel):
         pad = dict(padx=6, pady=5)
         frm = ttk.Frame(self, padding=16)
         frm.grid()
-        ttk.Label(frm, text="DOMLA YUKLAMASI — DARS TAQSIMOTI",
+        ttk.Label(frm, text="PROFESSOR-O'QITUVCHI YUKLAMASI — DARS TAQSIMOTI",
                   style="Title.TLabel").grid(row=0, column=0, columnspan=4, sticky="w", pady=(0, 12))
 
-        ttk.Label(frm, text="Domla:").grid(row=1, column=0, sticky="w", **pad)
+        ttk.Label(frm, text="Professor-o'qituvchi:").grid(row=1, column=0, sticky="w", **pad)
         self.cb_domla = ttk.Combobox(frm, state="readonly", width=54,
                                      values=[short_name(r["FIO"]) for r in self.domlalar])
         self.cb_domla.grid(row=1, column=1, columnspan=3, sticky="we", **pad)
@@ -268,9 +280,9 @@ class TaqsimotDialog(tk.Toplevel):
         self.cb_sem.grid(row=4, column=1, sticky="w", **pad)
 
         ttk.Label(frm, text="Fan / yuklama:").grid(row=5, column=0, sticky="w", **pad)
-        self.cb_fan = ttk.Combobox(frm, state="readonly", width=54)
+        self.cb_fan = ttk.Combobox(frm, width=54)        # editable: type to filter
         self.cb_fan.grid(row=5, column=1, columnspan=3, sticky="we", **pad)
-        ttk.Label(frm, text="(Ma'ruza, Amaliyot va Reyting alohida; biriktirilgani ro'yxatdan chiqadi)",
+        ttk.Label(frm, text="(yozib qidiring → tanlang yoki Enter; Ma'ruza/Amaliyot/Reyting alohida; biriktirilgani chiqadi)",
                   foreground="#888").grid(row=6, column=1, columnspan=3, sticky="w", padx=6)
 
         ttk.Label(frm, text="Soat:").grid(row=7, column=0, sticky="w", **pad)
@@ -289,6 +301,8 @@ class TaqsimotDialog(tk.Toplevel):
         for cb in (self.cb_yon, self.cb_talim, self.cb_sem):
             cb.bind("<<ComboboxSelected>>", lambda e: self._refresh_fan())
         self.cb_fan.bind("<<ComboboxSelected>>", lambda e: self._on_fan())
+        self.cb_fan.bind("<KeyRelease>", self._fan_type)
+        self.cb_fan.bind("<Return>", self._fan_enter)
 
         self.cb_yon.set(ALL)
         self.cb_talim.set(ALL)
@@ -372,6 +386,8 @@ class TaqsimotDialog(tk.Toplevel):
 
     def _comp_label(self, c):
         r = c["row"]
+        til = (r["Til"] or "").strip()
+        name = f'{c["FanNomi"]} ({til.lower()})' if til else c["FanNomi"]
         extra = []
         if r["TalimTuri"]:
             extra.append(r["TalimTuri"])
@@ -382,21 +398,41 @@ class TaqsimotDialog(tk.Toplevel):
             hrs = f'qoldi {g(c["remaining"])}/{g(c["total"])} soat'
         else:
             hrs = f'{g(c["total"])} soat'
-        return f'{c["FanNomi"]} — {c["TurSoat"]} ({hrs}){tail}'
+        return f'{name} — {c["TurSoat"]} ({hrs}){tail}'
 
     def _refresh_fan(self):
         self.components = self._build_components()
-        self.cb_fan["values"] = [self._comp_label(c) for c in self.components]
+        self._shown = list(self.components)
+        self.cb_fan["values"] = [self._comp_label(c) for c in self._shown]
         self.cb_fan.set("")
         self.var_soat.set("")
         self.ent_soat.config(state="normal")
         self.lbl_yuk.config(text="Yuklama: —")
 
     def _current(self):
+        shown = getattr(self, "_shown", self.components)
         i = self.cb_fan.current()
-        if i < 0 or i >= len(self.components):
+        if i < 0 or i >= len(shown):
             return None
-        return self.components[i]
+        return shown[i]
+
+    def _fan_type(self, event):
+        nav = {"Up", "Down", "Return", "Escape", "Left", "Right", "Tab",
+               "Shift_L", "Shift_R", "Control_L", "Control_R", "Alt_L", "Alt_R", "Home", "End"}
+        if event.keysym in nav:
+            return
+        typed = self.cb_fan.get().strip().lower()
+        if typed:
+            self._shown = [c for c in self.components if typed in self._comp_label(c).lower()]
+        else:
+            self._shown = list(self.components)
+        self.cb_fan["values"] = [self._comp_label(c) for c in self._shown]
+
+    def _fan_enter(self, event):
+        if getattr(self, "_shown", None) and self.cb_fan.current() < 0:
+            self.cb_fan.current(0)
+        self._on_fan()
+        return "break"
 
     def _on_fan(self):
         c = self._current()
@@ -436,7 +472,7 @@ class TaqsimotDialog(tk.Toplevel):
     def _save(self):
         di = self.cb_domla.current()
         if di < 0:
-            messagebox.showerror("Xato", "Domla tanlanishi shart.", parent=self)
+            messagebox.showerror("Xato", "Professor-o'qituvchi tanlanishi shart.", parent=self)
             return
         c = self._current()
         if not c:
@@ -462,8 +498,8 @@ class TaqsimotDialog(tk.Toplevel):
                 "LIMIT 1", (self.domla_ids[di], c["FanID"])).fetchone()
             if not eligible:
                 messagebox.showerror("Xato",
-                    "Reyting faqat shu fanning Ma'ruza yoki Amaliyotini o'qitadigan domlaga "
-                    "biriktiriladi.\nAvval o'sha domlaga shu fandan Ma'ruza yoki Amaliyot biriktiring.",
+                    "Reyting faqat shu fanning Ma'ruza yoki Amaliyotini o'qitadigan professor-o'qituvchiga "
+                    "biriktiriladi.\nAvval o'sha professor-o'qituvchiga shu fandan Ma'ruza yoki Amaliyot biriktiring.",
                     parent=self)
                 return
         self.result = {"DomlaID": self.domla_ids[di], "FanID": c["FanID"],
@@ -541,7 +577,7 @@ class App(tk.Tk):
         for c, w in zip(columns, widths):
             tree.heading(c, text=c, command=lambda col=c: self._sort_tree(tree, col))
             tree.column(c, width=w, anchor=anchors.get(c, "w"),
-                        stretch=(c in ("F.I.Sh.", "Fan nomi", "Domla (F.I.Sh.)", "Fan")))
+                        stretch=(c in ("F.I.Sh.", "Fan nomi", "Professor-o'qituvchi (F.I.Sh.)", "Fan")))
         tree.tag_configure("odd", background="#f5f7fa")
         tree._columns = list(columns)
         tree._sort = {"col": None, "asc": True}
@@ -653,12 +689,15 @@ class App(tk.Tk):
 
     # ================= DOMLALAR =================
     def _build_domlalar(self):
-        _, bar, body = self._make_tab("  Domlalar  ")
+        _, bar, body = self._make_tab("  Professor-O'qituvchilar  ")
         ttk.Button(bar, text="+ Qo'shish", command=self.dom_add).pack(side="left")
         ttk.Button(bar, text="Tahrirlash", command=self.dom_edit).pack(side="left", padx=4)
         ttk.Button(bar, text="O'chirish", command=self.dom_del).pack(side="left")
         ttk.Button(bar, text="CSV import", command=self.dom_import).pack(side="left", padx=(12, 0))
         ttk.Button(bar, text="Shablon", command=self.dom_template).pack(side="left", padx=4)
+        self.dom_total = tk.StringVar(value="Jami meyor: 0")
+        ttk.Label(bar, textvariable=self.dom_total, font=("Segoe UI", 10, "bold"),
+                  foreground="#0a58ca").pack(side="right", padx=(8, 10))
         self.dom_q = tk.StringVar()
         self._add_search(bar, self.dom_q)
         self.dom_q.trace_add("write", lambda *_: self.load_domlalar())
@@ -671,13 +710,18 @@ class App(tk.Tk):
     def load_domlalar(self):
         q = (self.dom_q.get() if hasattr(self, "dom_q") else "").strip().lower()
         rows = []
+        total = 0
         for r in self.con.execute("SELECT * FROM Domlalar ORDER BY FIO COLLATE NOCASE"):
             if q and q not in (r["FIO"] or "").lower() and q not in (r["IlmiyUnvon"] or "").lower():
                 continue
+            mj = meyor_jami(r["Meyor1St"], r["Stavka"])
+            total += mj or 0
             rows.append((r["DomlaID"], (
                 r["DomlaID"], r["FIO"], r["IlmiyUnvon"], g(r["Kategoriya"]),
-                g(r["Stavka"]), g(r["Meyor1St"]), g(meyor_jami(r["Meyor1St"], r["Stavka"])))))
+                g(r["Stavka"]), g(r["Meyor1St"]), g(mj))))
         self._fill(self.t_dom, rows)
+        if hasattr(self, "dom_total"):
+            self.dom_total.set(f"Jami meyor: {g(total)}")
 
     def _dom_spec(self):
         return [("FIO", "F.I.Sh.", "text", None),
@@ -691,7 +735,7 @@ class App(tk.Tk):
         return f"Meyor (jami) = {g(meyor_jami(d.get('Meyor1St'), d.get('Stavka')))} soat"
 
     def dom_add(self):
-        d = FormDialog(self, "Yangi domla", self._dom_spec(),
+        d = FormDialog(self, "Yangi professor-o'qituvchi", self._dom_spec(),
                        {"Stavka": 1, "IlmiyUnvon": "PhD", "Kategoriya": "1"},
                        computed=self._dom_preview).result
         if d:
@@ -705,7 +749,7 @@ class App(tk.Tk):
         if i is None:
             return
         r = self.con.execute("SELECT * FROM Domlalar WHERE DomlaID=?", (i,)).fetchone()
-        d = FormDialog(self, "Domlani tahrirlash", self._dom_spec(), dict(r),
+        d = FormDialog(self, "Professor-o'qituvchini tahrirlash", self._dom_spec(), dict(r),
                        computed=self._dom_preview).result
         if d:
             self.con.execute("UPDATE Domlalar SET FIO=?,IlmiyUnvon=?,Kategoriya=?,Stavka=?,Meyor1St=? WHERE DomlaID=?",
@@ -720,26 +764,26 @@ class App(tk.Tk):
         used = self.con.execute("SELECT COUNT(*) c FROM Taqsimot WHERE DomlaID=?", (i,)).fetchone()["c"]
         if used:
             messagebox.showwarning("O'chirib bo'lmaydi",
-                                   f"Bu domla taqsimotda {used} marta ishlatilgan. Avval o'sha yozuvlarni o'chiring.")
+                                   f"Bu professor-o'qituvchi taqsimotda {used} marta ishlatilgan. Avval o'sha yozuvlarni o'chiring.")
             return
-        if messagebox.askyesno("Tasdiqlang", "Tanlangan domla o'chirilsinmi?"):
+        if messagebox.askyesno("Tasdiqlang", "Tanlangan professor-o'qituvchi o'chirilsinmi?"):
             self.con.execute("DELETE FROM Domlalar WHERE DomlaID=?", (i,))
             self.con.commit()
             self.refresh_all()
 
     def dom_import(self):
-        self._csv_import("Domlalar", ["FIO", "IlmiyUnvon", "Kategoriya", "Stavka", "Meyor1St"],
+        self._csv_import("Professor-o'qituvchilar", ["FIO", "IlmiyUnvon", "Kategoriya", "Stavka", "Meyor1St"],
                          "INSERT INTO Domlalar(FIO,IlmiyUnvon,Kategoriya,Stavka,Meyor1St) VALUES(?,?,?,?,?)",
                          lambda r: (r.get("FIO", "").strip(), r.get("IlmiyUnvon", "").strip() or "Darajasiz",
                                     self._i(r.get("Kategoriya")), self._f(r.get("Stavka"), 1), self._f(r.get("Meyor1St"))))
 
     def dom_template(self):
         self._save_template(["FIO", "IlmiyUnvon", "Kategoriya", "Stavka", "Meyor1St"],
-                            ["Familiya Ism Otasi", "PhD", "1", "1.5", "360"], "domlalar_shablon.csv")
+                            ["Familiya Ism Otasi", "PhD", "1", "1.5", "360"], "professor_oqituvchilar_shablon.csv")
 
     # ================= FANLAR =================
     def _build_fanlar(self):
-        _, bar, body = self._make_tab("  Fanlar  ")
+        _, bar, body = self._make_tab("  Fanlar yuklamasi  ")
         ttk.Button(bar, text="+ Qo'shish", command=self.fan_add).pack(side="left")
         ttk.Button(bar, text="Tahrirlash", command=self.fan_edit).pack(side="left", padx=4)
         ttk.Button(bar, text="O'chirish", command=self.fan_del).pack(side="left")
@@ -752,9 +796,9 @@ class App(tk.Tk):
         self.fan_q = tk.StringVar()
         self._add_search(bar, self.fan_q)
         self.fan_q.trace_add("write", lambda *_: self.load_fanlar())
-        cols = ["ID", "Fan nomi", "Yo'nalish", "Ta'lim turi", "Sem.",
+        cols = ["ID", "Fan nomi", "Yo'nalish", "Ta'lim turi", "Til", "Sem.",
                 "Ma'ruza", "Amaliyot", "Potok", "Guruh", "Reyting", "Jami soat"]
-        w = [45, 230, 150, 90, 45, 70, 75, 55, 55, 65, 80]
+        w = [45, 215, 135, 85, 65, 45, 65, 70, 50, 50, 60, 75]
         an = {c: "e" for c in ["Sem.", "Ma'ruza", "Amaliyot", "Potok", "Guruh", "Reyting", "Jami soat"]}
         an["ID"] = "center"
         self.t_fan = self._make_tree(body, cols, w, an)
@@ -770,7 +814,7 @@ class App(tk.Tk):
             _, _, jami = fan_totals(r["Maruza"], r["Amaliyot"], r["Potok"], r["Guruh"], r["Reyting"])
             total += jami or 0
             rows.append((r["FanID"], (
-                r["FanID"], r["FanNomi"], r["Yonalish"], r["TalimTuri"], g(r["Semestr"]),
+                r["FanID"], r["FanNomi"], r["Yonalish"], r["TalimTuri"], r["Til"], g(r["Semestr"]),
                 g(r["Maruza"]), g(r["Amaliyot"]), g(r["Potok"]), g(r["Guruh"]), g(r["Reyting"]), g(jami))))
         self._fill(self.t_fan, rows)
         if hasattr(self, "fan_total"):
@@ -786,39 +830,41 @@ class App(tk.Tk):
                 ("Amaliyot", "Amaliyot (soat)", "float", None),
                 ("Potok", "Potok (oqim soni)", "int", None),
                 ("Guruh", "Guruh soni", "int", None),
-                ("Reyting", "Reyting (soat)", "float", None)]
+                ("Reyting", "Reyting (soat)", "float", None),
+                ("Til", "Til (o'qitish tili)", "combo", TILLAR)]
 
     @staticmethod
     def _fan_preview(d):
         mj, aj, js = fan_totals(d.get("Maruza"), d.get("Amaliyot"), d.get("Potok"), d.get("Guruh"), d.get("Reyting"))
         return f"Ma'ruza jami={g(mj)} · Amaliyot jami={g(aj)} · Jami soat={g(js)}"
 
-    def _fan_exists(self, nomi, yon, talim, sem, exclude_id=None):
+    def _fan_exists(self, nomi, yon, talim, sem, til, exclude_id=None):
         key = ((nomi or "").strip().lower(), (yon or "").strip().lower(),
-               (talim or "").strip().lower(), str(int(sem or 0)))
-        for r in self.con.execute("SELECT FanID, FanNomi, Yonalish, TalimTuri, Semestr FROM Fanlar"):
+               (talim or "").strip().lower(), str(int(sem or 0)), (til or "").strip().lower())
+        for r in self.con.execute("SELECT FanID, FanNomi, Yonalish, TalimTuri, Semestr, Til FROM Fanlar"):
             if exclude_id and r["FanID"] == exclude_id:
                 continue
             rk = ((r["FanNomi"] or "").strip().lower(), (r["Yonalish"] or "").strip().lower(),
-                  (r["TalimTuri"] or "").strip().lower(), str(int(r["Semestr"] or 0)))
+                  (r["TalimTuri"] or "").strip().lower(), str(int(r["Semestr"] or 0)), (r["Til"] or "").strip().lower())
             if rk == key:
                 return True
         return False
 
     def fan_add(self):
         d = FormDialog(self, "Yangi fan", self._fan_spec(),
-                       {"Potok": 1, "Guruh": 1, "Kategoriya": "1", "TalimTuri": "Kunduzgi"},
+                       {"Potok": 1, "Guruh": 1, "Kategoriya": "1", "TalimTuri": "Kunduzgi", "Til": "O'zbek"},
                        computed=self._fan_preview, rules=fan_rules).result
         if d:
-            if self._fan_exists(d["FanNomi"], d["Yonalish"], d["TalimTuri"], d["Semestr"]):
+            if self._fan_exists(d["FanNomi"], d["Yonalish"], d["TalimTuri"], d["Semestr"], d.get("Til")):
                 if not messagebox.askyesno("Takror fan",
-                        "Nomi, yo'nalishi, ta'lim shakli va semestri bir xil fan allaqachon mavjud.\n"
+                        "Nomi, yo'nalishi, ta'lim shakli, semestri va tili bir xil fan allaqachon mavjud.\n"
                         "Baribir qo'shilsinmi?"):
                     return
             self.con.execute("INSERT INTO Fanlar(FanNomi,Yonalish,TalimTuri,Kategoriya,Semestr,"
-                             "Maruza,Amaliyot,Potok,Guruh,Reyting) VALUES(?,?,?,?,?,?,?,?,?,?)",
+                             "Maruza,Amaliyot,Potok,Guruh,Reyting,Til) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
                              (d["FanNomi"], d["Yonalish"], d["TalimTuri"], int(d["Kategoriya"] or 0),
-                              int(d["Semestr"] or 0), d["Maruza"], d["Amaliyot"], d["Potok"], d["Guruh"], d["Reyting"]))
+                              int(d["Semestr"] or 0), d["Maruza"], d["Amaliyot"], d["Potok"], d["Guruh"],
+                              d["Reyting"], d.get("Til") or "O'zbek"))
             self.con.commit()
             self.refresh_all()
 
@@ -831,9 +877,10 @@ class App(tk.Tk):
                        computed=self._fan_preview, rules=fan_rules).result
         if d:
             self.con.execute("UPDATE Fanlar SET FanNomi=?,Yonalish=?,TalimTuri=?,Kategoriya=?,Semestr=?,"
-                             "Maruza=?,Amaliyot=?,Potok=?,Guruh=?,Reyting=? WHERE FanID=?",
+                             "Maruza=?,Amaliyot=?,Potok=?,Guruh=?,Reyting=?,Til=? WHERE FanID=?",
                              (d["FanNomi"], d["Yonalish"], d["TalimTuri"], int(d["Kategoriya"] or 0),
-                              int(d["Semestr"] or 0), d["Maruza"], d["Amaliyot"], d["Potok"], d["Guruh"], d["Reyting"], i))
+                              int(d["Semestr"] or 0), d["Maruza"], d["Amaliyot"], d["Potok"], d["Guruh"],
+                              d["Reyting"], d.get("Til") or "O'zbek", i))
             self.con.commit()
             self.refresh_all()
 
@@ -860,7 +907,8 @@ class App(tk.Tk):
 
         def idk(r):
             return (r.get("FanNomi", "").strip().lower(), r.get("Yonalish", "").strip().lower(),
-                    r.get("TalimTuri", "").strip().lower(), str(r.get("Semestr", "")).strip())
+                    r.get("TalimTuri", "").strip().lower(), str(r.get("Semestr", "")).strip(),
+                    (r.get("Til", "") or "").strip().lower())
         groups = {}
         for r in raw_rows:
             groups.setdefault(idk(r), []).append(r)
@@ -882,23 +930,24 @@ class App(tk.Tk):
 
     def fan_import(self):
         cols = ["FanNomi", "Yonalish", "TalimTuri", "Kategoriya", "Semestr",
-                "Maruza", "Amaliyot", "Potok", "Guruh", "Reyting"]
-        self._csv_import("Fanlar", cols,
+                "Maruza", "Amaliyot", "Potok", "Guruh", "Reyting", "Til"]
+        self._csv_import("Fanlar yuklamasi", cols,
                          "INSERT INTO Fanlar(FanNomi,Yonalish,TalimTuri,Kategoriya,Semestr,"
-                         "Maruza,Amaliyot,Potok,Guruh,Reyting) VALUES(?,?,?,?,?,?,?,?,?,?)",
+                         "Maruza,Amaliyot,Potok,Guruh,Reyting,Til) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
                          lambda r: (r.get("FanNomi", "").strip(), r.get("Yonalish", "").strip(),
                                     r.get("TalimTuri", "").strip(), self._i(r.get("Kategoriya")),
                                     self._i(r.get("Semestr")), self._f(r.get("Maruza")), self._f(r.get("Amaliyot")),
                                     self._i(r.get("Potok"), 1), self._i(r.get("Guruh"), 1),
-                                    self._f(r.get("Reyting")) if r.get("TalimTuri", "").strip() == "Masofaviy" else 0.0),
+                                    self._f(r.get("Reyting")) if r.get("TalimTuri", "").strip() == "Masofaviy" else 0.0,
+                                    (r.get("Til", "") or "").strip() or "O'zbek"),
                          preprocess=self._fan_label_dups)
 
     def fan_dedup(self):
         """Remove duplicate courses (same Nomi+Yonalish+TalimTuri+Semestr), keeping the first."""
         groups = {}
-        for r in self.con.execute("SELECT FanID, FanNomi, Yonalish, TalimTuri, Semestr FROM Fanlar ORDER BY FanID"):
+        for r in self.con.execute("SELECT FanID, FanNomi, Yonalish, TalimTuri, Semestr, Til FROM Fanlar ORDER BY FanID"):
             k = ((r["FanNomi"] or "").strip().lower(), (r["Yonalish"] or "").strip().lower(),
-                 (r["TalimTuri"] or "").strip().lower(), str(int(r["Semestr"] or 0)))
+                 (r["TalimTuri"] or "").strip().lower(), str(int(r["Semestr"] or 0)), (r["Til"] or "").strip().lower())
             groups.setdefault(k, []).append(r["FanID"])
         dup_ids = [fid for ids in groups.values() for fid in ids[1:]]
         if not dup_ids:
@@ -921,8 +970,8 @@ class App(tk.Tk):
 
     def fan_template(self):
         self._save_template(["FanNomi", "Yonalish", "TalimTuri", "Kategoriya", "Semestr",
-                             "Maruza", "Amaliyot", "Potok", "Guruh", "Reyting"],
-                            ["Fan nomi", "Iqtisodiyot", "Kunduzgi", "1", "3", "30", "30", "1", "1", "0"],
+                             "Maruza", "Amaliyot", "Potok", "Guruh", "Reyting", "Til"],
+                            ["Fan nomi", "Iqtisodiyot", "Kunduzgi", "1", "3", "30", "30", "1", "1", "0", "O'zbek"],
                             "fanlar_shablon.csv")
 
     # ================= TAQSIMOT =================
@@ -935,21 +984,25 @@ class App(tk.Tk):
         self.taq_q = tk.StringVar()
         self._add_search(bar, self.taq_q)
         self.taq_q.trace_add("write", lambda *_: self.load_taqsimot())
-        cols = ["ID", "Domla (F.I.Sh.)", "Fan", "Turi", "Soat"]
-        w = [50, 260, 320, 110, 80]
+        cols = ["ID", "Professor-o'qituvchi (F.I.Sh.)", "Fan", "Turi", "Soat"]
+        w = [50, 290, 320, 110, 80]
         self.t_taq = self._make_tree(body, cols, w, {"ID": "center", "Soat": "e"})
         self.t_taq.bind("<Double-1>", lambda e: self.taq_edit())
 
     def load_taqsimot(self):
         q = (self.taq_q.get() if hasattr(self, "taq_q") else "").strip().lower()
-        sql = """SELECT t.TaqsimotID, d.FIO, f.FanNomi, t.TurSoat, t.Soat
+        sql = """SELECT t.TaqsimotID, d.FIO, f.FanNomi, f.Til, t.TurSoat, t.Soat
                  FROM Taqsimot t
                  LEFT JOIN Domlalar d ON d.DomlaID=t.DomlaID
                  LEFT JOIN Fanlar f   ON f.FanID=t.FanID
                  ORDER BY d.FIO COLLATE NOCASE, f.FanNomi COLLATE NOCASE"""
         rows = []
         for r in self.con.execute(sql):
-            fio, fan = r["FIO"] or "—", r["FanNomi"] or "—"
+            fio = r["FIO"] or "—"
+            fan = r["FanNomi"] or "—"
+            til = (r["Til"] or "").strip()
+            if til and fan != "—":
+                fan = f"{fan} ({til.lower()})"
             if q and q not in fio.lower() and q not in fan.lower():
                 continue
             rows.append((r["TaqsimotID"], (r["TaqsimotID"], fio, fan, r["TurSoat"], g(r["Soat"]))))
@@ -958,7 +1011,7 @@ class App(tk.Tk):
     def _has_base_data(self):
         if not self.con.execute("SELECT 1 FROM Domlalar LIMIT 1").fetchone() or \
            not self.con.execute("SELECT 1 FROM Fanlar LIMIT 1").fetchone():
-            messagebox.showwarning("Ma'lumot yetarli emas", "Avval kamida bitta domla va bitta fan kiriting.")
+            messagebox.showwarning("Ma'lumot yetarli emas", "Avval kamida bitta professor-o'qituvchi va bitta fan kiriting.")
             return False
         return True
 
@@ -998,7 +1051,7 @@ class App(tk.Tk):
                                             filetypes=[("CSV", "*.csv")], initialfile="taqsimot.csv")
         if not path:
             return
-        sql = """SELECT d.FIO, f.FanNomi, f.Yonalish, f.TalimTuri, f.Semestr, t.TurSoat, t.Soat
+        sql = """SELECT d.FIO, f.FanNomi, f.Til, f.Yonalish, f.TalimTuri, f.Semestr, t.TurSoat, t.Soat
                  FROM Taqsimot t
                  LEFT JOIN Domlalar d ON d.DomlaID=t.DomlaID
                  LEFT JOIN Fanlar f   ON f.FanID=t.FanID
@@ -1006,9 +1059,9 @@ class App(tk.Tk):
         try:
             with open(path, "w", newline="", encoding="utf-8-sig") as fh:
                 w = csv.writer(fh)
-                w.writerow(["Domla", "Fan", "Yonalish", "TalimTuri", "Semestr", "Turi", "Soat"])
+                w.writerow(["Professor-o'qituvchi", "Fan", "Til", "Yonalish", "TalimTuri", "Semestr", "Turi", "Soat"])
                 for r in self.con.execute(sql):
-                    w.writerow([r["FIO"] or "", r["FanNomi"] or "", r["Yonalish"] or "",
+                    w.writerow([r["FIO"] or "", r["FanNomi"] or "", r["Til"] or "", r["Yonalish"] or "",
                                 r["TalimTuri"] or "", g(r["Semestr"]), r["TurSoat"], g(r["Soat"])])
             messagebox.showinfo("Tayyor", f"Taqsimot saqlandi:\n{path}")
         except OSError as e:
