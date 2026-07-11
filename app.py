@@ -144,6 +144,96 @@ def short_name(fio):
     return " ".join(parts[:2]) if parts else (fio or "")
 
 
+# ----- Styled Excel (.xlsx) writer — stdlib only, Excel-grid look -----
+def _xesc(s):
+    return (str(s).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+            .replace('"', "&quot;"))
+
+
+def _col_letter(n):
+    s = ""
+    while n >= 0:
+        s = chr(n % 26 + 65) + s
+        n = n // 26 - 1
+    return s
+
+
+def write_styled_xlsx(path, sheet_name, headers, widths, rows, text_cols=()):
+    """Write an .xlsx in the Excel-grid style: thin borders on every cell, bold
+    wrapped centered 2-line headers, centered values (text columns left-aligned),
+    frozen header row. headers may contain '\\n'. widths — Excel column widths.
+    rows — lists of values (numbers stay numeric). text_cols — left-aligned column indexes."""
+    import zipfile
+    styles = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+<fonts count="2"><font><sz val="11"/><name val="Calibri"/></font>
+<font><b/><sz val="11"/><name val="Calibri"/></font></fonts>
+<fills count="2"><fill><patternFill patternType="none"/></fill>
+<fill><patternFill patternType="gray125"/></fill></fills>
+<borders count="2"><border><left/><right/><top/><bottom/><diagonal/></border>
+<border><left style="thin"/><right style="thin"/><top style="thin"/><bottom style="thin"/><diagonal/></border></borders>
+<cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>
+<cellXfs count="4">
+<xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>
+<xf numFmtId="0" fontId="1" fillId="0" borderId="1" xfId="0" applyFont="1" applyBorder="1" applyAlignment="1"><alignment horizontal="center" vertical="center" wrapText="1"/></xf>
+<xf numFmtId="0" fontId="0" fillId="0" borderId="1" xfId="0" applyBorder="1" applyAlignment="1"><alignment horizontal="center" vertical="center"/></xf>
+<xf numFmtId="0" fontId="0" fillId="0" borderId="1" xfId="0" applyBorder="1" applyAlignment="1"><alignment horizontal="left" vertical="center"/></xf>
+</cellXfs><cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles></styleSheet>"""
+    cols_xml = "".join(f'<col min="{i+1}" max="{i+1}" width="{w}" customWidth="1"/>'
+                       for i, w in enumerate(widths))
+    body = [f'<row r="1" ht="30" customHeight="1">']
+    for i, h in enumerate(headers):
+        body.append(f'<c r="{_col_letter(i)}1" s="1" t="inlineStr">'
+                    f'<is><t xml:space="preserve">{_xesc(h)}</t></is></c>')
+    body.append("</row>")
+    for ri, row in enumerate(rows, start=2):
+        body.append(f'<row r="{ri}">')
+        for ci, v in enumerate(row):
+            ref = f"{_col_letter(ci)}{ri}"
+            if isinstance(v, (int, float)) and not isinstance(v, bool):
+                num = int(v) if float(v) == int(v) else v
+                body.append(f'<c r="{ref}" s="2"><v>{num}</v></c>')
+            else:
+                s = 3 if ci in text_cols else 2
+                body.append(f'<c r="{ref}" s="{s}" t="inlineStr">'
+                            f'<is><t xml:space="preserve">{_xesc(v)}</t></is></c>')
+        body.append("</row>")
+    sheet = (f'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+             f'<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
+             f'<sheetViews><sheetView workbookViewId="0">'
+             f'<pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/>'
+             f'</sheetView></sheetViews>'
+             f'<cols>{cols_xml}</cols><sheetData>{"".join(body)}</sheetData></worksheet>')
+    workbook = (f'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+                f'<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" '
+                f'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
+                f'<sheets><sheet name="{_xesc(sheet_name)}" sheetId="1" r:id="rId1"/></sheets></workbook>')
+    wb_rels = ('<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+               '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+               '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>'
+               '<Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>'
+               '</Relationships>')
+    root_rels = ('<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+                 '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+                 '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>'
+                 '</Relationships>')
+    ctypes = ('<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+              '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
+              '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>'
+              '<Default Extension="xml" ContentType="application/xml"/>'
+              '<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>'
+              '<Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>'
+              '<Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>'
+              '</Types>')
+    with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as z:
+        z.writestr("[Content_Types].xml", ctypes)
+        z.writestr("_rels/.rels", root_rels)
+        z.writestr("xl/workbook.xml", workbook)
+        z.writestr("xl/_rels/workbook.xml.rels", wb_rels)
+        z.writestr("xl/styles.xml", styles)
+        z.writestr("xl/worksheets/sheet1.xml", sheet)
+
+
 def fan_rules(dlg):
     """Reyting only applies to Masofaviy subjects; otherwise disable the field and force 0."""
     w = dlg.widgets.get("Reyting")
@@ -1463,7 +1553,8 @@ class App(tk.Tk):
     def _build_yukfan(self):
         _, bar, body = self._make_tab("  Yuklama (hisobot - fanlar)  ")
         ttk.Button(bar, text="Yangilash", style="Primary.TButton", command=self.load_yukfan).pack(side="left")
-        ttk.Button(bar, text="CSV ga eksport", style="Secondary.TButton", command=self.yukfan_export).pack(side="left", padx=8)
+        ttk.Button(bar, text="Excel ga eksport", style="Secondary.TButton", command=self.yukfan_export_xlsx).pack(side="left", padx=8)
+        ttk.Button(bar, text="CSV ga eksport", style="Secondary.TButton", command=self.yukfan_export).pack(side="left")
         self.yukfan_q = tk.StringVar()
         self._add_search(bar, self.yukfan_q)
         self.yukfan_q.trace_add("write", lambda *_: self.load_yukfan())
@@ -1476,7 +1567,7 @@ class App(tk.Tk):
                 "Reyting\n(jami)", "Reyting\nberilgan", "Jami", "Berilgan", "Qoldiq", "Bajarilish\n%",
                 "O'qituvchilar"]
         w = [40, 180, 110, 72, 55, 42, 68, 68, 72, 68, 62, 62, 56, 66, 58, 72, 210]
-        an = {c: "e" for c in cols if c not in ("Fan nomi", "Yo'nalish", "Ta'lim\nturi", "Til", "O'qituvchilar")}
+        an = {c: "center" for c in cols if c not in ("Fan nomi", "Yo'nalish", "Ta'lim\nturi", "Til", "O'qituvchilar")}
         an["ID"] = "center"
         self.t_yukfan = self._make_tree(body, cols, w, an, stretch=())
         for c in cols:                       # sarlavha matnini markazga tekislash
@@ -1547,6 +1638,31 @@ class App(tk.Tk):
                                 g(d["mj"]), g(d["mb"]), g(d["aj"]), g(d["ab"]), g(d["rj"]), g(d["rb"]),
                                 g(d["jami"]), g(d["berilgan"]), g(d["qoldiq"]), f"{d['pct']:.0f}", d["oqit"]])
             messagebox.showinfo("Tayyor", f"Hisobot saqlandi:\n{path}")
+        except OSError as e:
+            messagebox.showerror("Xato", str(e))
+
+    def yukfan_export_xlsx(self):
+        """Export the per-course report as a styled Excel file: bordered grid,
+        centered values, bold two-line wrapped headers (Excel wrap-text style)."""
+        path = filedialog.asksaveasfilename(defaultextension=".xlsx",
+                                            filetypes=[("Excel", "*.xlsx")],
+                                            initialfile="yuklama_fanlar_hisobot.xlsx")
+        if not path:
+            return
+        headers = ["ID", "Fan nomi", "Yo'nalish", "Ta'lim\nturi", "Til", "Sem.",
+                   "Ma'ruza\n(jami)", "Ma'ruza\nberilgan", "Amaliyot\n(jami)", "Amaliyot\nberilgan",
+                   "Reyting\n(jami)", "Reyting\nberilgan", "Jami", "Berilgan", "Qoldiq",
+                   "Bajarilish\n%", "O'qituvchilar"]
+        widths = [6, 28, 17, 11, 9, 6, 9, 9, 9, 9, 9, 9, 8, 9, 8, 10, 34]
+        rows = []
+        for d in sorted(self._fan_report_rows(), key=lambda x: x["pct"], reverse=True):
+            rows.append([d["id"], d["nomi"] or "", d["yon"] or "", d["talim"] or "", d["til"] or "",
+                         d["sem"] or 0, d["mj"], d["mb"], d["aj"], d["ab"], d["rj"], d["rb"],
+                         d["jami"], d["berilgan"], d["qoldiq"], f"{d['pct']:.0f}%", d["oqit"]])
+        try:
+            write_styled_xlsx(path, "Yuklama - fanlar", headers, widths, rows,
+                              text_cols=(1, 2, 3, 4, 16))
+            messagebox.showinfo("Tayyor", f"Excel hisobot saqlandi:\n{path}")
         except OSError as e:
             messagebox.showerror("Xato", str(e))
 
@@ -1749,7 +1865,9 @@ class App(tk.Tk):
                   "Qidiruv barcha ustunlar bo'yicha ishlaydi: ID, F.I.Sh., fan nomi, yo'nalish, ta'lim turi, "
                   "til, semestr va h.k. Bir nechta so'z yozsangiz, hammasi mos kelgan qatorlar chiqadi "
                   "(masalan: «ekonometrika kunduzgi»)."),
-            ("b", "CSV eksport — «Taqsimot» va «Yuklama» bo'limlarida ma'lumotni Excel uchun CSV faylga saqlash mumkin."),
+            ("b", "CSV eksport — «Taqsimot» va «Yuklama» bo'limlarida ma'lumotni Excel uchun CSV faylga saqlash mumkin. "
+                  "«Yuklama (hisobot - fanlar)» bo'limida «Excel ga eksport» — tayyor bezalgan .xlsx fayl beradi: "
+                  "barcha katakchalar chegarali, qiymatlar markazda, sarlavhalar qalin va 2 qatorli."),
             ("b", "Takror fanlar — bir xil fan ikki marta kiritilgan bo'lsa, «Takror tozalash» tugmasi ularni "
                   "tozalaydi. CSV import paytida takror fanlarning farqi (masalan reyting) avtomatik qavs ichida belgilanadi."),
 
