@@ -739,7 +739,7 @@ class App(tk.Tk):
         e = ttk.Entry(bar, textvariable=var, width=26)
         e.pack(side="left")
 
-    def _make_tree(self, parent, columns, widths, anchors=None):
+    def _make_tree(self, parent, columns, widths, anchors=None, stretch=None):
         wrap = tk.Frame(parent, background=UI["surface"], highlightthickness=1,
                         highlightbackground=UI["border"], highlightcolor=UI["border"], bd=0)
         wrap.pack(fill="both", expand=True)
@@ -753,10 +753,12 @@ class App(tk.Tk):
         wrap.rowconfigure(0, weight=1)
         wrap.columnconfigure(0, weight=1)
         anchors = anchors or {}
+        if stretch is None:
+            stretch = ("F.I.Sh.", "Fan nomi", "Professor-o'qituvchi (F.I.Sh.)", "Fan")
         for c, w in zip(columns, widths):
             tree.heading(c, text=c, command=lambda col=c: self._sort_tree(tree, col))
-            tree.column(c, width=w, anchor=anchors.get(c, "w"),
-                        stretch=(c in ("F.I.Sh.", "Fan nomi", "Professor-o'qituvchi (F.I.Sh.)", "Fan")))
+            tree.column(c, width=w, minwidth=40, anchor=anchors.get(c, "w"),
+                        stretch=(c in stretch))
         tree.tag_configure("odd", background=UI["stripe"])
         tree._columns = list(columns)
         tree._sort = {"col": None, "asc": True}
@@ -1274,7 +1276,7 @@ class App(tk.Tk):
         w = [42, 200, 120, 82, 60, 42, 92, 84, 96, 84, 90, 84, 70, 74, 70, 84, 240]
         an = {c: "e" for c in cols if c not in ("Fan nomi", "Yo'nalish", "Ta'lim turi", "Til", "O'qituvchilar")}
         an["ID"] = "center"
-        self.t_yukfan = self._make_tree(body, cols, w, an)
+        self.t_yukfan = self._make_tree(body, cols, w, an, stretch=())
 
     def _fan_report_rows(self):
         """Per-course overview: planned vs assigned hours for each component + teachers."""
