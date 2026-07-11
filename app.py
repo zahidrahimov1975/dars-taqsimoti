@@ -770,7 +770,7 @@ class App(tk.Tk):
         wrap = tk.Frame(parent, background=UI["surface"], highlightthickness=1,
                         highlightbackground=UI["border"], highlightcolor=UI["border"], bd=0)
         wrap.pack(fill="both", expand=True)
-        tree = ttk.Treeview(wrap, columns=columns, show="headings", selectmode="browse")
+        tree = ttk.Treeview(wrap, columns=columns, show="headings", selectmode="extended")
         vs = ttk.Scrollbar(wrap, orient="vertical", command=tree.yview)
         hs = ttk.Scrollbar(wrap, orient="horizontal", command=tree.xview)
         tree.configure(yscrollcommand=vs.set, xscrollcommand=hs.set)
@@ -789,6 +789,12 @@ class App(tk.Tk):
         tree.tag_configure("odd", background=UI["stripe"])
         tree._columns = list(columns)
         tree._sort = {"col": None, "asc": True}
+        # Ctrl+A — select all rows (Shift/Ctrl+click also work thanks to selectmode="extended")
+        def _select_all(event, t=tree):
+            t.selection_set(t.get_children(""))
+            return "break"
+        tree.bind("<Control-a>", _select_all)
+        tree.bind("<Control-A>", _select_all)
         return tree
 
     def _sort_tree(self, tree, col):
@@ -822,8 +828,9 @@ class App(tk.Tk):
         tree.delete(*tree.get_children())
         for i, (iid, vals) in enumerate(rows):
             tree.insert("", "end", iid=str(iid), values=vals, tags=("odd",) if i % 2 else ())
-        if sel and tree.exists(sel[0]):
-            tree.selection_set(sel[0])
+        keep = [s for s in sel if tree.exists(s)]
+        if keep:
+            tree.selection_set(keep)
         if hasattr(tree, "_columns"):          # data reloaded -> back to default order
             tree._sort = {"col": None, "asc": True}
             for c in tree._columns:
@@ -842,6 +849,10 @@ class App(tk.Tk):
     def _selected_id(tree):
         s = tree.selection()
         return int(s[0]) if s else None
+
+    @staticmethod
+    def _selected_ids(tree):
+        return [int(s) for s in tree.selection()]
 
     @staticmethod
     def _i(v, default=0):
@@ -975,18 +986,32 @@ class App(tk.Tk):
             self.refresh_all()
 
     def dom_del(self):
-        i = self._selected_id(self.t_dom)
-        if i is None:
+        ids = self._selected_ids(self.t_dom)
+        if not ids:
             return
-        used = self.con.execute("SELECT COUNT(*) c FROM Taqsimot WHERE DomlaID=?", (i,)).fetchone()["c"]
-        if used:
+        used, free = [], []
+        for i in ids:
+            r = self.con.execute("SELECT FIO, (SELECT COUNT(*) FROM Taqsimot WHERE DomlaID=?) c "
+                                 "FROM Domlalar WHERE DomlaID=?", (i, i)).fetchone()
+            if not r:
+                continue
+            (used if r["c"] else free).append((i, r["FIO"]))
+        if used and not free:
+            names = "\n".join(f"• {short_name(f)}" for _, f in used[:10])
             messagebox.showwarning("O'chirib bo'lmaydi",
-                                   f"Bu professor-o'qituvchi taqsimotda {used} marta ishlatilgan. Avval o'sha yozuvlarni o'chiring.")
+                f"Tanlangan professor-o'qituvchi(lar) taqsimotda ishlatilgan:\n{names}\n\n"
+                "Avval ularning taqsimot yozuvlarini o'chiring.")
             return
-        if messagebox.askyesno("Tasdiqlang", "Tanlangan professor-o'qituvchi o'chirilsinmi?"):
-            self.con.execute("DELETE FROM Domlalar WHERE DomlaID=?", (i,))
-            self.con.commit()
-            self.refresh_all()
+        msg = (f"{len(free)} ta professor-o'qituvchi o'chirilsinmi?"
+               if len(free) > 1 else "Tanlangan professor-o'qituvchi o'chirilsinmi?")
+        if used:
+            names = "\n".join(f"• {short_name(f)}" for _, f in used[:10])
+            msg += (f"\n\nQuyidagi {len(used)} tasi taqsimotda ishlatilgani uchun O'CHIRILMAYDI:\n{names}")
+        if not messagebox.askyesno("Tasdiqlang", msg):
+            return
+        self.con.executemany("DELETE FROM Domlalar WHERE DomlaID=?", [(i,) for i, _ in free])
+        self.con.commit()
+        self.refresh_all()
 
     def dom_import(self):
         self._csv_import("Professor-o'qituvchilar", ["FIO", "IlmiyUnvon", "Kategoriya", "Stavka", "Meyor1St"],
@@ -1102,18 +1127,31 @@ class App(tk.Tk):
             self.refresh_all()
 
     def fan_del(self):
-        i = self._selected_id(self.t_fan)
-        if i is None:
+        ids = self._selected_ids(self.t_fan)
+        if not ids:
             return
-        used = self.con.execute("SELECT COUNT(*) c FROM Taqsimot WHERE FanID=?", (i,)).fetchone()["c"]
-        if used:
+        used, free = [], []
+        for i in ids:
+            r = self.con.execute("SELECT FanNomi, (SELECT COUNT(*) FROM Taqsimot WHERE FanID=?) c "
+                                 "FROM Fanlar WHERE FanID=?", (i, i)).fetchone()
+            if not r:
+                continue
+            (used if r["c"] else free).append((i, r["FanNomi"]))
+        if used and not free:
+            names = "\n".join(f"• {f}" for _, f in used[:10])
             messagebox.showwarning("O'chirib bo'lmaydi",
-                                   f"Bu fan taqsimotda {used} marta ishlatilgan. Avval o'sha yozuvlarni o'chiring.")
+                f"Tanlangan fan(lar) taqsimotda ishlatilgan:\n{names}\n\n"
+                "Avval ularning taqsimot yozuvlarini o'chiring.")
             return
-        if messagebox.askyesno("Tasdiqlang", "Tanlangan fan o'chirilsinmi?"):
-            self.con.execute("DELETE FROM Fanlar WHERE FanID=?", (i,))
-            self.con.commit()
-            self.refresh_all()
+        msg = (f"{len(free)} ta fan o'chirilsinmi?" if len(free) > 1 else "Tanlangan fan o'chirilsinmi?")
+        if used:
+            names = "\n".join(f"• {f}" for _, f in used[:10])
+            msg += (f"\n\nQuyidagi {len(used)} tasi taqsimotda ishlatilgani uchun O'CHIRILMAYDI:\n{names}")
+        if not messagebox.askyesno("Tasdiqlang", msg):
+            return
+        self.con.executemany("DELETE FROM Fanlar WHERE FanID=?", [(i,) for i, _ in free])
+        self.con.commit()
+        self.refresh_all()
 
     def _fan_label_dups(self, raw_rows):
         """Keep duplicate courses but append the differing field(s) in brackets to the name,
@@ -1257,11 +1295,13 @@ class App(tk.Tk):
             self.refresh_all()
 
     def taq_del(self):
-        i = self._selected_id(self.t_taq)
-        if i is None:
+        ids = self._selected_ids(self.t_taq)
+        if not ids:
             return
-        if messagebox.askyesno("Tasdiqlang", "Tanlangan yozuv o'chirilsinmi?"):
-            self.con.execute("DELETE FROM Taqsimot WHERE TaqsimotID=?", (i,))
+        msg = (f"{len(ids)} ta taqsimot yozuvi o'chirilsinmi?" if len(ids) > 1
+               else "Tanlangan yozuv o'chirilsinmi?")
+        if messagebox.askyesno("Tasdiqlang", msg):
+            self.con.executemany("DELETE FROM Taqsimot WHERE TaqsimotID=?", [(i,) for i in ids])
             self.con.commit()
             self.refresh_all()
 
@@ -1560,6 +1600,10 @@ class App(tk.Tk):
             ("h1", "Foydali imkoniyatlar"),
             ("b", "Saralash — istalgan ustun sarlavhasini bosing, ma'lumot o'sha ustun bo'yicha tartiblanadi "
                   "(yana bossangiz — teskari tartib). Sonlar son bo'yicha, matn alifbo bo'yicha saralanadi."),
+            ("b", "Ko'p qatorni tanlash — Shift+bosish (oraliqni tanlaydi), Ctrl+bosish (bittalab qo'shadi) "
+                  "yoki Ctrl+A (barchasini tanlaydi). So'ng «O'chirish» tugmasi bilan tanlangan barcha "
+                  "qatorlarni bir vaqtda o'chirish mumkin. Taqsimotda ishlatilgan o'qituvchi/fanlar "
+                  "o'chirilmaydi — ular ro'yxatda ko'rsatiladi, qolganlari o'chiriladi."),
             ("b", "Qidirish — har bir varaqdagi «Qidirish» maydoniga yozib, kerakli yozuvni tez toping. "
                   "Qidiruv barcha ustunlar bo'yicha ishlaydi: ID, F.I.Sh., fan nomi, yo'nalish, ta'lim turi, "
                   "til, semestr va h.k. Bir nechta so'z yozsangiz, hammasi mos kelgan qatorlar chiqadi "
