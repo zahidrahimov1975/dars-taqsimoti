@@ -586,7 +586,26 @@ class TaqsimotDialog(tk.Toplevel):
                     "biriktiriladi.\nAvval o'sha professor-o'qituvchiga shu fandan Ma'ruza yoki Amaliyot biriktiring.",
                     parent=self)
                 return
-        self.result = {"DomlaID": self.domla_ids[di], "FanID": c["FanID"],
+        # Meyor (jami) check: over-assignment is ALLOWED, but the user is notified.
+        dom_id = self.domla_ids[di]
+        dom = self.con.execute("SELECT FIO, Stavka, Meyor1St FROM Domlalar WHERE DomlaID=?", (dom_id,)).fetchone()
+        norm = meyor_jami(dom["Meyor1St"], dom["Stavka"])
+        if self.editing_id:
+            cur = self.con.execute("SELECT COALESCE(SUM(Soat),0) s FROM Taqsimot "
+                                   "WHERE DomlaID=? AND TaqsimotID<>?", (dom_id, self.editing_id)).fetchone()["s"]
+        else:
+            cur = self.con.execute("SELECT COALESCE(SUM(Soat),0) s FROM Taqsimot "
+                                   "WHERE DomlaID=?", (dom_id,)).fetchone()["s"]
+        new_total = cur + soat
+        if norm and new_total > norm + 1e-9:
+            pct = new_total / norm * 100
+            messagebox.showwarning("Meyordan ortiq",
+                f"Diqqat: {short_name(dom['FIO'])} uchun meyor (jami) — {g(norm)} soat.\n"
+                f"Bu biriktirishdan so'ng jami yuklama {g(new_total)} soat bo'ladi "
+                f"({g(new_total - norm)} soat meyordan ortiq, bajarilish {pct:.0f}%).\n\n"
+                f"Yozuv baribir saqlanadi — hisobotda bu «Meyordan ortiq» deb belgilanadi.",
+                parent=self)
+        self.result = {"DomlaID": dom_id, "FanID": c["FanID"],
                        "TurSoat": c["TurSoat"], "Soat": soat}
         self.destroy()
 
@@ -1357,29 +1376,40 @@ class App(tk.Tk):
         self.yuk_summary = tk.StringVar()
         ttk.Label(bar, textvariable=self.yuk_summary, style="Muted.TLabel").pack(side="right", padx=(8, 2))
         cols = ["ID", "F.I.Sh.", "Stavka", "Meyor (jami)", "Ma'ruza", "Amaliyot", "Reyting",
-                "Jami berilgan", "Farq", "Bajarilish %"]
-        w = [45, 240, 65, 100, 80, 80, 70, 100, 80, 100]
-        an = {c: "e" for c in cols if c != "F.I.Sh."}
+                "Jami berilgan", "Farq", "Bajarilish %", "Izoh"]
+        w = [45, 220, 60, 95, 75, 75, 65, 95, 75, 90, 170]
+        an = {c: "e" for c in cols if c not in ("F.I.Sh.", "Izoh")}
         an["ID"] = "center"
         self.t_yuk = self._make_tree(body, cols, w, an)
+        self.t_yuk.tag_configure("over", background=UI["danger_soft"], foreground=UI["danger_dark"])
 
     def load_yuklama(self):
         q = (self.yuk_q.get() if hasattr(self, "yuk_q") else "").strip().lower()
         self.t_yuk.delete(*self.t_yuk.get_children())
         tot_norm = tot_assigned = 0
-        shown = 0
+        shown = over = 0
         for d in sorted(workload_rows(self.con), key=lambda x: x["pct"], reverse=True):
             tot_norm += d["norm"]
             tot_assigned += d["jami"]
             if not self._q_match(q, d["id"], d["fio"], g(d["stavka"]), g(d["norm"])):
                 continue
             shown += 1
+            is_over = d["norm"] and d["jami"] > d["norm"] + 1e-9
+            if is_over:
+                over += 1
+                izoh = f"⚠ Meyordan ortiq (+{g(d['jami'] - d['norm'])} soat)"
+            else:
+                izoh = ""
+            tags = (("over",) if is_over else ()) + (("odd",) if shown % 2 == 0 else ())
             self.t_yuk.insert("", "end", values=(
                 d["id"], d["fio"], g(d["stavka"]), g(d["norm"]), g(d["maruza"]), g(d["amaliyot"]),
-                g(d["reyting"]), g(d["jami"]), g(d["diff"]), f"{d['pct']:.0f}%"),
-                tags=("odd",) if shown % 2 == 0 else ())
-        self.yuk_summary.set(f"Ko'rsatilgan: {shown}   |   Umumiy meyor: {g(tot_norm)} soat   "
-                             f"|   Berilgan: {g(tot_assigned)} soat")
+                g(d["reyting"]), g(d["jami"]), g(d["diff"]), f"{d['pct']:.0f}%", izoh),
+                tags=tags)
+        summary = (f"Ko'rsatilgan: {shown}   |   Umumiy meyor: {g(tot_norm)} soat   "
+                   f"|   Berilgan: {g(tot_assigned)} soat")
+        if over:
+            summary += f"   |   ⚠ Meyordan ortiq: {over} ta"
+        self.yuk_summary.set(summary)
 
     def yuk_export(self):
         path = filedialog.asksaveasfilename(defaultextension=".csv",
@@ -1390,10 +1420,12 @@ class App(tk.Tk):
             with open(path, "w", newline="", encoding="utf-8-sig") as fh:
                 w = csv.writer(fh)
                 w.writerow(["FIO", "Stavka", "Meyor_jami", "Maruza", "Amaliyot", "Reyting",
-                            "Jami_berilgan", "Farq", "Bajarilish_%"])
+                            "Jami_berilgan", "Farq", "Bajarilish_%", "Izoh"])
                 for d in workload_rows(self.con):
+                    izoh = (f"Meyordan ortiq (+{g(d['jami'] - d['norm'])} soat)"
+                            if d["norm"] and d["jami"] > d["norm"] + 1e-9 else "")
                     w.writerow([d["fio"], g(d["stavka"]), g(d["norm"]), g(d["maruza"]), g(d["amaliyot"]),
-                                g(d["reyting"]), g(d["jami"]), g(d["diff"]), f"{d['pct']:.0f}"])
+                                g(d["reyting"]), g(d["jami"]), g(d["diff"]), f"{d['pct']:.0f}", izoh])
             messagebox.showinfo("Tayyor", f"Hisobot saqlandi:\n{path}")
         except OSError as e:
             messagebox.showerror("Xato", str(e))
@@ -1511,6 +1543,9 @@ class App(tk.Tk):
                   "farqi va bajarilish foizi ko'rsatiladi. Yangilash uchun «Yangilash» tugmasini bosing."),
             ("b", "Ikkala hisobot ham avtomatik tarzda «Bajarilish %» bo'yicha kamayish tartibida saralanadi "
                   "(eng yuqori foizdan eng pastiga). Boshqa ustun bo'yicha saralash uchun ustun sarlavhasini bosing."),
+            ("b", "Meyordan ortiq yuklama — Taqsimotda biriktirish o'qituvchining meyor (jami)sidan oshsa, "
+                  "ogohlantirish chiqadi, lekin yozuv baribir saqlanadi. Hisobotda bunday o'qituvchilar qizil "
+                  "rangda va «Izoh» ustunida «⚠ Meyordan ortiq (+X soat)» belgisi bilan ko'rsatiladi."),
             ("p", "«Professor-O'qituvchilar» varag'ida o'ng yuqorida «Jami meyor» — barcha o'qituvchilarning "
                   "umumiy me'yori ko'rsatiladi."),
 
