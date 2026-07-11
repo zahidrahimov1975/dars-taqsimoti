@@ -312,7 +312,8 @@ class TaqsimotDialog(tk.Toplevel):
         self.var_soat = tk.StringVar()
         self.ent_soat = ttk.Entry(frm, textvariable=self.var_soat, width=12)
         self.ent_soat.grid(row=7, column=1, sticky="w", **pad)
-        ttk.Label(frm, text="Potok soni:").grid(row=7, column=2, sticky="e", **pad)
+        self.var_unitlbl = tk.StringVar(value="Potok soni:")
+        ttk.Label(frm, textvariable=self.var_unitlbl).grid(row=7, column=2, sticky="e", **pad)
         self.var_potok = tk.StringVar()
         self.sp_potok = ttk.Spinbox(frm, from_=1, to=1, textvariable=self.var_potok, width=6,
                                     state="disabled", command=self._on_potok)
@@ -426,6 +427,8 @@ class TaqsimotDialog(tk.Toplevel):
             hrs = f'{g(c["total"])} soat'
         if c["TurSoat"] == "Maruza" and (r["Potok"] or 1) > 1 and c["unit"]:
             hrs += f' · 1 potok = {g(c["unit"])} soat'
+        elif c["TurSoat"] == "Amaliyot" and (r["Guruh"] or 1) > 1 and c["unit"]:
+            hrs += f' · 1 guruh = {g(c["unit"])} soat'
         return f'{name} — {c["TurSoat"]} ({hrs}){tail}'
 
     def _refresh_fan(self):
@@ -464,8 +467,13 @@ class TaqsimotDialog(tk.Toplevel):
         self._on_fan()
         return "break"
 
-    def _maruza_max_potok(self, c):
+    def _max_units(self, c):
+        """How many whole units (potok for Maruza, guruh for Amaliyot) remain."""
         return max(1, int(round(c["remaining"] / c["unit"]))) if c.get("unit") else 1
+
+    @staticmethod
+    def _unit_word(c):
+        return "potok" if c["TurSoat"] == "Maruza" else "guruh"
 
     def _on_fan(self):
         c = self._current()
@@ -473,12 +481,14 @@ class TaqsimotDialog(tk.Toplevel):
             return
         self.var_soat.set(g(c["default"]))
         self.ent_soat.config(state="disabled")        # hours are set automatically, not editable
-        if c["TurSoat"] == "Maruza" and c.get("unit"):
-            mx = self._maruza_max_potok(c)
+        if c["TurSoat"] in ("Maruza", "Amaliyot") and c.get("unit"):
+            word = self._unit_word(c)
+            self.var_unitlbl.set(f"{word.capitalize()} soni:")
+            mx = self._max_units(c)
             self.sp_potok.config(state="normal", from_=1, to=mx)
             self.var_potok.set("1")
-            self.lbl_yuk.config(text=f"Ma'ruza: 1 potok = {g(c['unit'])} soat (bo'linmaydi), "
-                                     f"qoldi {mx} potok ({g(c['remaining'])} soat)")
+            self.lbl_yuk.config(text=f"{c['TurSoat']}: 1 {word} = {g(c['unit'])} soat (bo'linmaydi), "
+                                     f"qoldi {mx} {word} ({g(c['remaining'])} soat)")
         else:
             self.var_potok.set("")
             self.sp_potok.config(state="disabled")
@@ -488,15 +498,15 @@ class TaqsimotDialog(tk.Toplevel):
                 self.lbl_yuk.config(text=f"{c['TurSoat']}: {g(c['total'])} soat — bitta professor")
 
     def _on_potok(self):
-        """Potok count changed -> Soat = potok × per-potok hours."""
+        """Unit count changed -> Soat = count × per-unit hours."""
         c = self._current()
-        if not c or c["TurSoat"] != "Maruza" or not c.get("unit"):
+        if not c or c["TurSoat"] not in ("Maruza", "Amaliyot") or not c.get("unit"):
             return
         try:
             n = int(float(self.var_potok.get().strip()))
         except (ValueError, AttributeError):
             return
-        n = max(1, min(n, self._maruza_max_potok(c)))
+        n = max(1, min(n, self._max_units(c)))
         self.var_soat.set(g(n * c["unit"]))
 
     def _clear_filters(self):
@@ -522,7 +532,7 @@ class TaqsimotDialog(tk.Toplevel):
         if v.get("Soat") is not None:
             self.var_soat.set(g(v["Soat"]))
             c = self._current()
-            if c and c["TurSoat"] == "Maruza" and c.get("unit"):
+            if c and c["TurSoat"] in ("Maruza", "Amaliyot") and c.get("unit"):
                 try:
                     self.var_potok.set(str(max(1, int(round(float(v["Soat"]) / c["unit"])))))
                 except (ValueError, ZeroDivisionError):
@@ -546,19 +556,19 @@ class TaqsimotDialog(tk.Toplevel):
         if soat <= 0:
             messagebox.showerror("Xato", "Soat 0 dan katta bo'lishi kerak.", parent=self)
             return
-        if c["TurSoat"] == "Maruza" and c.get("unit"):
-            unit = c["unit"]
+        if c["TurSoat"] in ("Maruza", "Amaliyot") and c.get("unit"):
+            unit, word = c["unit"], self._unit_word(c)
             n = soat / unit
             if abs(n - round(n)) > 1e-6 or round(n) < 1:
                 messagebox.showerror("Xato",
-                    f"Ma'ruza faqat butun potok bo'yicha biriktiriladi.\n"
-                    f"1 potok = {g(unit)} soat (bo'linmaydi). Soat {g(unit)} ga karrali bo'lishi kerak "
+                    f"{c['TurSoat']} faqat butun {word} bo'yicha biriktiriladi.\n"
+                    f"1 {word} = {g(unit)} soat (bo'linmaydi). Soat {g(unit)} ga karrali bo'lishi kerak "
                     f"(masalan {g(unit)}, {g(2 * unit)}, ...).", parent=self)
                 return
             if soat > c["remaining"] + 1e-9:
                 messagebox.showerror("Xato",
-                    f"Qolgan potoklar: {self._maruza_max_potok(c)} ta ({g(c['remaining'])} soat).\n"
-                    f"Siz {g(soat)} soat ({int(round(n))} potok) kiritdingiz — ortiqcha biriktirish mumkin emas.",
+                    f"Qolgan {word}lar: {self._max_units(c)} ta ({g(c['remaining'])} soat).\n"
+                    f"Siz {g(soat)} soat ({int(round(n))} {word}) kiritdingiz — ortiqcha biriktirish mumkin emas.",
                     parent=self)
                 return
         elif soat > c["remaining"] + 1e-9:
@@ -1299,7 +1309,7 @@ class App(tk.Tk):
         self.t_yukfan.delete(*self.t_yukfan.get_children())
         tot_jami = tot_ber = 0
         shown = 0
-        for i, d in enumerate(self._fan_report_rows()):
+        for d in sorted(self._fan_report_rows(), key=lambda x: x["pct"], reverse=True):
             tot_jami += d["jami"]
             tot_ber += d["berilgan"]
             if not self._q_match(q, d["id"], d["nomi"], d["yon"], d["talim"],
@@ -1356,7 +1366,7 @@ class App(tk.Tk):
         self.t_yuk.delete(*self.t_yuk.get_children())
         tot_norm = tot_assigned = 0
         shown = 0
-        for d in workload_rows(self.con):
+        for d in sorted(workload_rows(self.con), key=lambda x: x["pct"], reverse=True):
             tot_norm += d["norm"]
             tot_assigned += d["jami"]
             if not self._q_match(q, d["id"], d["fio"], g(d["stavka"]), g(d["norm"])):
@@ -1483,9 +1493,11 @@ class App(tk.Tk):
                   "o'qitiladi (potok soatini bo'lish mumkin emas). Bitta o'qituvchi bir yoki bir nechta potok "
                   "olishi mumkin — «Potok soni» maydonida tanlang, soat avtomatik hisoblanadi. Barcha potoklar "
                   "taqsimlangach, fan ro'yxatdan chiqadi."),
-            ("b", "Amaliyot — guruhlar bo'yicha bo'linadi (jami = Amaliyot × Guruh). Bir guruhni bir "
-                  "o'qituvchiga, boshqasini boshqasiga berish mumkin. To'liq tarqatilmaguncha ro'yxatda "
-                  "«qoldi X/Y soat» ko'rinishida turadi."),
+            ("b", "Amaliyot — jami soat = Amaliyot × Guruh. Har bir guruh bitta o'qituvchi tomonidan to'liq "
+                  "o'qitiladi (guruh soatini bo'lish mumkin emas). Bitta o'qituvchi bir yoki bir nechta guruh "
+                  "olishi mumkin — «Guruh soni» maydonida tanlang, soat avtomatik hisoblanadi. Masalan 44 guruhli "
+                  "fanni 44 ta o'qituvchiga (har biriga 1 guruhdan) yoki kamroq o'qituvchiga ko'proq guruhdan "
+                  "berish mumkin. To'liq tarqatilmaguncha ro'yxatda «qoldi X/Y soat» ko'rinishida turadi."),
             ("b", "Bitta o'qituvchi ham ma'ruzani, ham amaliyotni o'qishi mumkin."),
             ("b", "Reyting — faqat shu fanning ma'ruzasi yoki amaliyotini o'qiydigan o'qituvchiga biriktiriladi."),
 
@@ -1495,6 +1507,8 @@ class App(tk.Tk):
                   "o'qituvchilar ro'yxati ko'rsatiladi."),
             ("p", "«Yuklama (hisobot - o'qituvchi)» — har bir o'qituvchining me'yori, biriktirilgan soatlari, "
                   "farqi va bajarilish foizi ko'rsatiladi. Yangilash uchun «Yangilash» tugmasini bosing."),
+            ("b", "Ikkala hisobot ham avtomatik tarzda «Bajarilish %» bo'yicha kamayish tartibida saralanadi "
+                  "(eng yuqori foizdan eng pastiga). Boshqa ustun bo'yicha saralash uchun ustun sarlavhasini bosing."),
             ("p", "«Professor-O'qituvchilar» varag'ida o'ng yuqorida «Jami meyor» — barcha o'qituvchilarning "
                   "umumiy me'yori ko'rsatiladi."),
 
