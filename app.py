@@ -1469,14 +1469,18 @@ class App(tk.Tk):
         self.yukfan_q.trace_add("write", lambda *_: self.load_yukfan())
         self.yukfan_summary = tk.StringVar()
         ttk.Label(bar, textvariable=self.yukfan_summary, style="Muted.TLabel").pack(side="right", padx=(8, 2))
-        cols = ["ID", "Fan nomi", "Yo'nalish", "Ta'lim turi", "Til", "Sem.",
-                "Ma'ruza (jami)", "M. berilgan", "Amaliyot (jami)", "A. berilgan",
-                "Reyting (jami)", "R. berilgan", "Jami", "Berilgan", "Qoldiq", "Bajarilish %",
+        # Excel'dagi "переносить по словам" kabi — sarlavhalar 2 qatorli, ustunlar tor,
+        # shunda ekranga ko'proq ustun sig'adi.
+        cols = ["ID", "Fan nomi", "Yo'nalish", "Ta'lim\nturi", "Til", "Sem.",
+                "Ma'ruza\n(jami)", "Ma'ruza\nberilgan", "Amaliyot\n(jami)", "Amaliyot\nberilgan",
+                "Reyting\n(jami)", "Reyting\nberilgan", "Jami", "Berilgan", "Qoldiq", "Bajarilish\n%",
                 "O'qituvchilar"]
-        w = [42, 200, 120, 82, 60, 42, 92, 84, 96, 84, 90, 84, 70, 74, 70, 84, 240]
-        an = {c: "e" for c in cols if c not in ("Fan nomi", "Yo'nalish", "Ta'lim turi", "Til", "O'qituvchilar")}
+        w = [40, 180, 110, 72, 55, 42, 68, 68, 72, 68, 62, 62, 56, 66, 58, 72, 210]
+        an = {c: "e" for c in cols if c not in ("Fan nomi", "Yo'nalish", "Ta'lim\nturi", "Til", "O'qituvchilar")}
         an["ID"] = "center"
         self.t_yukfan = self._make_tree(body, cols, w, an, stretch=())
+        for c in cols:                       # sarlavha matnini markazga tekislash
+            self.t_yukfan.heading(c, anchor="center")
 
     def _fan_report_rows(self):
         """Per-course overview: planned vs assigned hours for each component + teachers."""
