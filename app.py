@@ -301,6 +301,9 @@ class TaqsimotDialog(tk.Toplevel):
         ttk.Label(frm, text="Semestr:").grid(row=4, column=0, sticky="w", **pad)
         self.cb_sem = ttk.Combobox(frm, state="readonly", width=10, values=[ALL] + self._distinct_sem())
         self.cb_sem.grid(row=4, column=1, sticky="w", **pad)
+        ttk.Label(frm, text="Til (o'qitish tili):").grid(row=4, column=2, sticky="w", **pad)
+        self.cb_til = ttk.Combobox(frm, state="readonly", width=16, values=[ALL] + self._distinct("Til"))
+        self.cb_til.grid(row=4, column=3, sticky="we", **pad)
 
         ttk.Label(frm, text="Fan / yuklama:").grid(row=5, column=0, sticky="w", **pad)
         self.cb_fan = ttk.Combobox(frm, width=54)        # editable: type to filter
@@ -328,7 +331,7 @@ class TaqsimotDialog(tk.Toplevel):
         ttk.Button(btns, text="Saqlash", style="Primary.TButton", command=self._save).pack(side="right")
         ttk.Button(btns, text="Bekor qilish", style="Secondary.TButton", command=self.destroy).pack(side="right", padx=(0, 8))
 
-        for cb in (self.cb_yon, self.cb_talim, self.cb_sem):
+        for cb in (self.cb_yon, self.cb_talim, self.cb_sem, self.cb_til):
             cb.bind("<<ComboboxSelected>>", lambda e: self._refresh_fan())
         self.cb_fan.bind("<<ComboboxSelected>>", lambda e: self._on_fan())
         self.cb_fan.bind("<KeyRelease>", self._fan_type)
@@ -337,6 +340,7 @@ class TaqsimotDialog(tk.Toplevel):
         self.cb_yon.set(ALL)
         self.cb_talim.set(ALL)
         self.cb_sem.set(ALL)
+        self.cb_til.set(ALL)
         self._refresh_fan()
         if values:
             self._prefill(values)
@@ -371,10 +375,12 @@ class TaqsimotDialog(tk.Toplevel):
         return {(r["FanID"], r["TurSoat"]): r["s"] for r in cur}
 
     def _match(self, r):
-        y, t, s = self.cb_yon.get(), self.cb_talim.get(), self.cb_sem.get()
+        y, t, s, l = self.cb_yon.get(), self.cb_talim.get(), self.cb_sem.get(), self.cb_til.get()
         if y != ALL and (r["Yonalish"] or "") != y:
             return False
         if t != ALL and (r["TalimTuri"] or "") != t:
+            return False
+        if l != ALL and (r["Til"] or "").strip() != l:
             return False
         if s != ALL:
             rsem = str(int(r["Semestr"])) if r["Semestr"] else ""
@@ -513,6 +519,7 @@ class TaqsimotDialog(tk.Toplevel):
         self.cb_yon.set(ALL)
         self.cb_talim.set(ALL)
         self.cb_sem.set(ALL)
+        self.cb_til.set(ALL)
         self._refresh_fan()
 
     def _prefill(self, v):
@@ -523,6 +530,7 @@ class TaqsimotDialog(tk.Toplevel):
             self.cb_yon.set(fan["Yonalish"] or ALL)
             self.cb_talim.set(fan["TalimTuri"] or ALL)
             self.cb_sem.set(str(int(fan["Semestr"])) if fan["Semestr"] else ALL)
+            self.cb_til.set((fan["Til"] or "").strip() or ALL)
             self._refresh_fan()
             for idx, c in enumerate(self.components):
                 if c["FanID"] == v.get("FanID") and c["TurSoat"] == v.get("TurSoat"):
@@ -1517,7 +1525,7 @@ class App(tk.Tk):
             ("h1", "3-qadam: Taqsimot (dars biriktirish)"),
             ("p", "«Taqsimot» varag'ida «+ Qo'shish» tugmasini bosing. Ochilgan oynada:"),
             ("b", "Avval professor-o'qituvchini tanlang."),
-            ("b", "Kerak bo'lsa, yo'nalish / ta'lim shakli / semestr filtrlari bilan ro'yxatni qisqartiring."),
+            ("b", "Kerak bo'lsa, yo'nalish / ta'lim shakli / semestr / til filtrlari bilan ro'yxatni qisqartiring."),
             ("b", "«Fan / yuklama» maydoniga yozib qidiring — masalan «ekon» deb yozsangiz, mos fanlar "
                   "chiqadi. So'ng ro'yxatdan tanlang yoki Enter bosing."),
             ("b", "«Soat» avtomatik to'ldiriladi; kerak bo'lsa o'zgartiring. So'ng «Saqlash»."),
