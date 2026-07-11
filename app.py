@@ -312,11 +312,17 @@ class TaqsimotDialog(tk.Toplevel):
         self.var_soat = tk.StringVar()
         self.ent_soat = ttk.Entry(frm, textvariable=self.var_soat, width=12)
         self.ent_soat.grid(row=7, column=1, sticky="w", **pad)
+        ttk.Label(frm, text="Potok soni:").grid(row=7, column=2, sticky="e", **pad)
+        self.var_potok = tk.StringVar()
+        self.sp_potok = ttk.Spinbox(frm, from_=1, to=1, textvariable=self.var_potok, width=6,
+                                    state="disabled", command=self._on_potok)
+        self.sp_potok.grid(row=7, column=3, sticky="w", **pad)
+        self.sp_potok.bind("<KeyRelease>", lambda e: self._on_potok())
         self.lbl_yuk = ttk.Label(frm, text="Yuklama: —", foreground=UI["brand_dark"], font=(FONT, 10, "bold"))
-        self.lbl_yuk.grid(row=7, column=2, columnspan=2, sticky="w", **pad)
+        self.lbl_yuk.grid(row=8, column=0, columnspan=4, sticky="w", **pad)
 
         btns = ttk.Frame(frm)
-        btns.grid(row=8, column=0, columnspan=4, sticky="we", pady=(14, 0))
+        btns.grid(row=9, column=0, columnspan=4, sticky="we", pady=(14, 0))
         ttk.Button(btns, text="Filtrni tozalash", style="Secondary.TButton", command=self._clear_filters).pack(side="left")
         ttk.Button(btns, text="Saqlash", style="Primary.TButton", command=self._save).pack(side="right")
         ttk.Button(btns, text="Bekor qilish", style="Secondary.TButton", command=self.destroy).pack(side="right", padx=(0, 8))
@@ -377,7 +383,9 @@ class TaqsimotDialog(tk.Toplevel):
 
     def _build_components(self):
         """One entry per course-component, with type-specific rules:
-          - Maruza  : one professor for the whole course (total = Maruza), NOT splittable.
+          - Maruza  : total = Maruza × Potok. Splittable across teachers, but ONLY in whole
+                      potoks: 1 potok (= Maruza hours) is taught fully by one professor and
+                      can never be divided. One professor may take one or several potoks.
           - Amaliyot: total = Amaliyot × Guruh (groups), splittable across teachers (per group).
           - Reyting : total = Reyting, splittable; only for Masofaviy, eligible teachers only.
         A splittable component stays (showing remaining hours) until fully assigned."""
@@ -385,7 +393,7 @@ class TaqsimotDialog(tk.Toplevel):
         for r in self.fanlar:
             if not self._match(r):
                 continue
-            specs = [("Maruza", (r["Maruza"] or 0), False, (r["Maruza"] or 0)),
+            specs = [("Maruza", (r["Maruza"] or 0) * (r["Potok"] or 1), True, (r["Maruza"] or 0)),
                      ("Amaliyot", (r["Amaliyot"] or 0) * (r["Guruh"] or 1), True, (r["Amaliyot"] or 0))]
             if (r["TalimTuri"] or "") == "Masofaviy":        # Reyting only for distance education
                 specs.append(("Reyting", (r["Reyting"] or 0), True, (r["Reyting"] or 0)))
@@ -393,18 +401,13 @@ class TaqsimotDialog(tk.Toplevel):
                 if total <= 0:
                     continue
                 done = self.assigned_hours.get((r["FanID"], turi), 0)
-                if not splittable:
-                    if done > 0:                             # lecture already taken -> hide
-                        continue
-                    remaining, default = total, total
-                else:
-                    remaining = total - done
-                    if remaining <= 0:                       # fully assigned -> hide
-                        continue
-                    default = min(unit, remaining) if unit else remaining
+                remaining = total - done
+                if remaining <= 0:                           # fully assigned -> hide
+                    continue
+                default = min(unit, remaining) if unit else remaining
                 comps.append({"FanID": r["FanID"], "FanNomi": r["FanNomi"], "TurSoat": turi,
                               "total": total, "remaining": remaining, "default": default,
-                              "splittable": splittable, "row": r})
+                              "unit": unit, "splittable": splittable, "row": r})
         return comps
 
     def _comp_label(self, c):
@@ -421,6 +424,8 @@ class TaqsimotDialog(tk.Toplevel):
             hrs = f'qoldi {g(c["remaining"])}/{g(c["total"])} soat'
         else:
             hrs = f'{g(c["total"])} soat'
+        if c["TurSoat"] == "Maruza" and (r["Potok"] or 1) > 1 and c["unit"]:
+            hrs += f' · 1 potok = {g(c["unit"])} soat'
         return f'{name} — {c["TurSoat"]} ({hrs}){tail}'
 
     def _refresh_fan(self):
@@ -430,6 +435,8 @@ class TaqsimotDialog(tk.Toplevel):
         self.cb_fan.set("")
         self.var_soat.set("")
         self.ent_soat.config(state="normal")
+        self.var_potok.set("")
+        self.sp_potok.config(state="disabled")
         self.lbl_yuk.config(text="Yuklama: —")
 
     def _current(self):
@@ -457,16 +464,40 @@ class TaqsimotDialog(tk.Toplevel):
         self._on_fan()
         return "break"
 
+    def _maruza_max_potok(self, c):
+        return max(1, int(round(c["remaining"] / c["unit"]))) if c.get("unit") else 1
+
     def _on_fan(self):
         c = self._current()
         if not c:
             return
         self.var_soat.set(g(c["default"]))
         self.ent_soat.config(state="disabled")        # hours are set automatically, not editable
-        if c["splittable"]:
-            self.lbl_yuk.config(text=f"{c['TurSoat']}: jami {g(c['total'])} soat, qoldi {g(c['remaining'])} soat")
+        if c["TurSoat"] == "Maruza" and c.get("unit"):
+            mx = self._maruza_max_potok(c)
+            self.sp_potok.config(state="normal", from_=1, to=mx)
+            self.var_potok.set("1")
+            self.lbl_yuk.config(text=f"Ma'ruza: 1 potok = {g(c['unit'])} soat (bo'linmaydi), "
+                                     f"qoldi {mx} potok ({g(c['remaining'])} soat)")
         else:
-            self.lbl_yuk.config(text=f"{c['TurSoat']}: {g(c['total'])} soat — bitta professor")
+            self.var_potok.set("")
+            self.sp_potok.config(state="disabled")
+            if c["splittable"]:
+                self.lbl_yuk.config(text=f"{c['TurSoat']}: jami {g(c['total'])} soat, qoldi {g(c['remaining'])} soat")
+            else:
+                self.lbl_yuk.config(text=f"{c['TurSoat']}: {g(c['total'])} soat — bitta professor")
+
+    def _on_potok(self):
+        """Potok count changed -> Soat = potok × per-potok hours."""
+        c = self._current()
+        if not c or c["TurSoat"] != "Maruza" or not c.get("unit"):
+            return
+        try:
+            n = int(float(self.var_potok.get().strip()))
+        except (ValueError, AttributeError):
+            return
+        n = max(1, min(n, self._maruza_max_potok(c)))
+        self.var_soat.set(g(n * c["unit"]))
 
     def _clear_filters(self):
         self.cb_yon.set(ALL)
@@ -490,6 +521,12 @@ class TaqsimotDialog(tk.Toplevel):
                     break
         if v.get("Soat") is not None:
             self.var_soat.set(g(v["Soat"]))
+            c = self._current()
+            if c and c["TurSoat"] == "Maruza" and c.get("unit"):
+                try:
+                    self.var_potok.set(str(max(1, int(round(float(v["Soat"]) / c["unit"])))))
+                except (ValueError, ZeroDivisionError):
+                    pass
 
     def _save(self):
         di = self.cb_domla.current()
@@ -509,7 +546,22 @@ class TaqsimotDialog(tk.Toplevel):
         if soat <= 0:
             messagebox.showerror("Xato", "Soat 0 dan katta bo'lishi kerak.", parent=self)
             return
-        if soat > c["remaining"] + 1e-9:
+        if c["TurSoat"] == "Maruza" and c.get("unit"):
+            unit = c["unit"]
+            n = soat / unit
+            if abs(n - round(n)) > 1e-6 or round(n) < 1:
+                messagebox.showerror("Xato",
+                    f"Ma'ruza faqat butun potok bo'yicha biriktiriladi.\n"
+                    f"1 potok = {g(unit)} soat (bo'linmaydi). Soat {g(unit)} ga karrali bo'lishi kerak "
+                    f"(masalan {g(unit)}, {g(2 * unit)}, ...).", parent=self)
+                return
+            if soat > c["remaining"] + 1e-9:
+                messagebox.showerror("Xato",
+                    f"Qolgan potoklar: {self._maruza_max_potok(c)} ta ({g(c['remaining'])} soat).\n"
+                    f"Siz {g(soat)} soat ({int(round(n))} potok) kiritdingiz — ortiqcha biriktirish mumkin emas.",
+                    parent=self)
+                return
+        elif soat > c["remaining"] + 1e-9:
             if not messagebox.askyesno("Diqqat",
                     f"Bu komponent uchun qolgan soat: {g(c['remaining'])}.\n"
                     f"Siz {g(soat)} soat kiritdingiz. Baribir saqlansinmi?", parent=self):
@@ -564,6 +616,7 @@ class App(tk.Tk):
         self._build_domlalar()
         self._build_fanlar()
         self._build_taqsimot()
+        self._build_yukfan()
         self._build_yuklama()
         self.nb.bind("<<NotebookTabChanged>>", lambda e: self._on_tab())
 
@@ -738,6 +791,15 @@ class App(tk.Tk):
                 tree.heading(c, text=c)
 
     @staticmethod
+    def _q_match(q, *values):
+        """True if every space-separated search word occurs in at least one value
+        (search by ID, name, direction, type, semester, language, hours...)."""
+        if not q:
+            return True
+        hay = " | ".join(str(v).lower() for v in values if v is not None)
+        return all(w in hay for w in q.split())
+
+    @staticmethod
     def _selected_id(tree):
         s = tree.selection()
         return int(s[0]) if s else None
@@ -827,7 +889,8 @@ class App(tk.Tk):
         rows = []
         total = 0
         for r in self.con.execute("SELECT * FROM Domlalar ORDER BY FIO COLLATE NOCASE"):
-            if q and q not in (r["FIO"] or "").lower() and q not in (r["IlmiyUnvon"] or "").lower():
+            if not self._q_match(q, r["DomlaID"], r["FIO"], r["IlmiyUnvon"],
+                                 g(r["Kategoriya"]), g(r["Stavka"]), g(r["Meyor1St"])):
                 continue
             mj = meyor_jami(r["Meyor1St"], r["Stavka"])
             total += mj or 0
@@ -923,7 +986,8 @@ class App(tk.Tk):
         rows = []
         total = 0
         for r in self.con.execute("SELECT * FROM Fanlar ORDER BY FanID"):
-            if q and q not in (r["FanNomi"] or "").lower() and q not in (r["Yonalish"] or "").lower():
+            if not self._q_match(q, r["FanID"], r["FanNomi"], r["Yonalish"], r["TalimTuri"],
+                                 r["Til"], g(r["Semestr"]), g(r["Kategoriya"])):
                 continue
             _, _, jami = fan_totals(r["Maruza"], r["Amaliyot"], r["Potok"], r["Guruh"], r["Reyting"])
             total += jami or 0
@@ -1105,7 +1169,8 @@ class App(tk.Tk):
 
     def load_taqsimot(self):
         q = (self.taq_q.get() if hasattr(self, "taq_q") else "").strip().lower()
-        sql = """SELECT t.TaqsimotID, d.FIO, f.FanNomi, f.Til, t.TurSoat, t.Soat
+        sql = """SELECT t.TaqsimotID, d.FIO, f.FanNomi, f.Til, f.Yonalish, f.TalimTuri, f.Semestr,
+                        t.TurSoat, t.Soat
                  FROM Taqsimot t
                  LEFT JOIN Domlalar d ON d.DomlaID=t.DomlaID
                  LEFT JOIN Fanlar f   ON f.FanID=t.FanID
@@ -1117,7 +1182,8 @@ class App(tk.Tk):
             til = (r["Til"] or "").strip()
             if til and fan != "—":
                 fan = f"{fan} ({til.lower()})"
-            if q and q not in fio.lower() and q not in fan.lower():
+            if not self._q_match(q, r["TaqsimotID"], fio, fan, r["Yonalish"], r["TalimTuri"],
+                                 g(r["Semestr"]), r["TurSoat"], g(r["Soat"])):
                 continue
             rows.append((r["TaqsimotID"], (r["TaqsimotID"], fio, fan, r["TurSoat"], g(r["Soat"]))))
         self._fill(self.t_taq, rows)
@@ -1181,9 +1247,96 @@ class App(tk.Tk):
         except OSError as e:
             messagebox.showerror("Xato", str(e))
 
-    # ================= YUKLAMA (report) =================
+    # ================= YUKLAMA (hisobot - fanlar) =================
+    def _build_yukfan(self):
+        _, bar, body = self._make_tab("  Yuklama (hisobot - fanlar)  ")
+        ttk.Button(bar, text="Yangilash", style="Primary.TButton", command=self.load_yukfan).pack(side="left")
+        ttk.Button(bar, text="CSV ga eksport", style="Secondary.TButton", command=self.yukfan_export).pack(side="left", padx=8)
+        self.yukfan_q = tk.StringVar()
+        self._add_search(bar, self.yukfan_q)
+        self.yukfan_q.trace_add("write", lambda *_: self.load_yukfan())
+        self.yukfan_summary = tk.StringVar()
+        ttk.Label(bar, textvariable=self.yukfan_summary, style="Muted.TLabel").pack(side="right", padx=(8, 2))
+        cols = ["ID", "Fan nomi", "Yo'nalish", "Ta'lim turi", "Til", "Sem.",
+                "Ma'ruza (jami)", "M. berilgan", "Amaliyot (jami)", "A. berilgan",
+                "Reyting (jami)", "R. berilgan", "Jami", "Berilgan", "Qoldiq", "Bajarilish %",
+                "O'qituvchilar"]
+        w = [42, 200, 120, 82, 60, 42, 92, 84, 96, 84, 90, 84, 70, 74, 70, 84, 240]
+        an = {c: "e" for c in cols if c not in ("Fan nomi", "Yo'nalish", "Ta'lim turi", "Til", "O'qituvchilar")}
+        an["ID"] = "center"
+        self.t_yukfan = self._make_tree(body, cols, w, an)
+
+    def _fan_report_rows(self):
+        """Per-course overview: planned vs assigned hours for each component + teachers."""
+        assigned = {(r["FanID"], r["TurSoat"]): r["s"] for r in self.con.execute(
+            "SELECT FanID, TurSoat, COALESCE(SUM(Soat),0) s FROM Taqsimot GROUP BY FanID, TurSoat")}
+        teachers = {}
+        for r in self.con.execute(
+                """SELECT t.FanID, d.FIO, t.TurSoat FROM Taqsimot t
+                   JOIN Domlalar d ON d.DomlaID=t.DomlaID
+                   ORDER BY d.FIO COLLATE NOCASE"""):
+            mark = {"Maruza": "M", "Amaliyot": "A", "Reyting": "R"}.get(r["TurSoat"], "?")
+            teachers.setdefault(r["FanID"], []).append(f"{short_name(r['FIO'])} ({mark})")
+        out = []
+        for r in self.con.execute("SELECT * FROM Fanlar ORDER BY FanNomi COLLATE NOCASE"):
+            mj, aj, js = fan_totals(r["Maruza"], r["Amaliyot"], r["Potok"], r["Guruh"], r["Reyting"])
+            rj = (r["Reyting"] or 0) if (r["TalimTuri"] or "") == "Masofaviy" else 0
+            mb = assigned.get((r["FanID"], "Maruza"), 0)
+            ab = assigned.get((r["FanID"], "Amaliyot"), 0)
+            rb = assigned.get((r["FanID"], "Reyting"), 0)
+            jami = mj + aj + rj
+            berilgan = mb + ab + rb
+            pct = (berilgan / jami * 100) if jami else 0
+            out.append({"id": r["FanID"], "nomi": r["FanNomi"], "yon": r["Yonalish"],
+                        "talim": r["TalimTuri"], "til": r["Til"], "sem": r["Semestr"],
+                        "mj": mj, "mb": mb, "aj": aj, "ab": ab, "rj": rj, "rb": rb,
+                        "jami": jami, "berilgan": berilgan, "qoldiq": jami - berilgan,
+                        "pct": pct, "oqit": ", ".join(teachers.get(r["FanID"], [])) or "—"})
+        return out
+
+    def load_yukfan(self):
+        q = (self.yukfan_q.get() if hasattr(self, "yukfan_q") else "").strip().lower()
+        self.t_yukfan.delete(*self.t_yukfan.get_children())
+        tot_jami = tot_ber = 0
+        shown = 0
+        for i, d in enumerate(self._fan_report_rows()):
+            tot_jami += d["jami"]
+            tot_ber += d["berilgan"]
+            if not self._q_match(q, d["id"], d["nomi"], d["yon"], d["talim"],
+                                 d["til"], g(d["sem"]), d["oqit"]):
+                continue
+            shown += 1
+            self.t_yukfan.insert("", "end", values=(
+                d["id"], d["nomi"], d["yon"], d["talim"], d["til"], g(d["sem"]),
+                g(d["mj"]), g(d["mb"]), g(d["aj"]), g(d["ab"]), g(d["rj"]), g(d["rb"]),
+                g(d["jami"]), g(d["berilgan"]), g(d["qoldiq"]), f"{d['pct']:.0f}%", d["oqit"]),
+                tags=("odd",) if shown % 2 == 0 else ())
+        self.yukfan_summary.set(f"Ko'rsatilgan: {shown}   |   Jami reja: {g(tot_jami)} soat   "
+                                f"|   Berilgan: {g(tot_ber)} soat   |   Qoldiq: {g(tot_jami - tot_ber)} soat")
+
+    def yukfan_export(self):
+        path = filedialog.asksaveasfilename(defaultextension=".csv",
+                                            filetypes=[("CSV", "*.csv")], initialfile="yuklama_fanlar_hisobot.csv")
+        if not path:
+            return
+        try:
+            with open(path, "w", newline="", encoding="utf-8-sig") as fh:
+                w = csv.writer(fh)
+                w.writerow(["FanID", "FanNomi", "Yonalish", "TalimTuri", "Til", "Semestr",
+                            "Maruza_jami", "Maruza_berilgan", "Amaliyot_jami", "Amaliyot_berilgan",
+                            "Reyting_jami", "Reyting_berilgan", "Jami", "Berilgan", "Qoldiq",
+                            "Bajarilish_%", "Oqituvchilar"])
+                for d in self._fan_report_rows():
+                    w.writerow([d["id"], d["nomi"], d["yon"], d["talim"], d["til"], g(d["sem"]),
+                                g(d["mj"]), g(d["mb"]), g(d["aj"]), g(d["ab"]), g(d["rj"]), g(d["rb"]),
+                                g(d["jami"]), g(d["berilgan"]), g(d["qoldiq"]), f"{d['pct']:.0f}", d["oqit"]])
+            messagebox.showinfo("Tayyor", f"Hisobot saqlandi:\n{path}")
+        except OSError as e:
+            messagebox.showerror("Xato", str(e))
+
+    # ================= YUKLAMA (hisobot - o'qituvchi) =================
     def _build_yuklama(self):
-        _, bar, body = self._make_tab("  Yuklama (hisobot)  ")
+        _, bar, body = self._make_tab("  Yuklama (hisobot - o'qituvchi)  ")
         ttk.Button(bar, text="Yangilash", style="Primary.TButton", command=self.load_yuklama).pack(side="left")
         ttk.Button(bar, text="CSV ga eksport", style="Secondary.TButton", command=self.yuk_export).pack(side="left", padx=8)
         self.yuk_q = tk.StringVar()
@@ -1191,10 +1344,11 @@ class App(tk.Tk):
         self.yuk_q.trace_add("write", lambda *_: self.load_yuklama())
         self.yuk_summary = tk.StringVar()
         ttk.Label(bar, textvariable=self.yuk_summary, style="Muted.TLabel").pack(side="right", padx=(8, 2))
-        cols = ["F.I.Sh.", "Stavka", "Meyor (jami)", "Ma'ruza", "Amaliyot", "Reyting",
+        cols = ["ID", "F.I.Sh.", "Stavka", "Meyor (jami)", "Ma'ruza", "Amaliyot", "Reyting",
                 "Jami berilgan", "Farq", "Bajarilish %"]
-        w = [260, 65, 100, 80, 80, 70, 100, 80, 100]
+        w = [45, 240, 65, 100, 80, 80, 70, 100, 80, 100]
         an = {c: "e" for c in cols if c != "F.I.Sh."}
+        an["ID"] = "center"
         self.t_yuk = self._make_tree(body, cols, w, an)
 
     def load_yuklama(self):
@@ -1205,12 +1359,13 @@ class App(tk.Tk):
         for d in workload_rows(self.con):
             tot_norm += d["norm"]
             tot_assigned += d["jami"]
-            if q and q not in d["fio"].lower():
+            if not self._q_match(q, d["id"], d["fio"], g(d["stavka"]), g(d["norm"])):
                 continue
             shown += 1
             self.t_yuk.insert("", "end", values=(
-                d["fio"], g(d["stavka"]), g(d["norm"]), g(d["maruza"]), g(d["amaliyot"]),
-                g(d["reyting"]), g(d["jami"]), g(d["diff"]), f"{d['pct']:.0f}%"))
+                d["id"], d["fio"], g(d["stavka"]), g(d["norm"]), g(d["maruza"]), g(d["amaliyot"]),
+                g(d["reyting"]), g(d["jami"]), g(d["diff"]), f"{d['pct']:.0f}%"),
+                tags=("odd",) if shown % 2 == 0 else ())
         self.yuk_summary.set(f"Ko'rsatilgan: {shown}   |   Umumiy meyor: {g(tot_norm)} soat   "
                              f"|   Berilgan: {g(tot_assigned)} soat")
 
@@ -1233,13 +1388,18 @@ class App(tk.Tk):
 
     # ---------- refresh ----------
     def _on_tab(self):
-        if self.nb.index(self.nb.select()) == 3:
+        idx = self.nb.index(self.nb.select())
+        if idx == 3:
+            self.load_yukfan()
+        elif idx == 4:
             self.load_yuklama()
 
     def refresh_all(self):
         self.load_domlalar()
         self.load_fanlar()
         self.load_taqsimot()
+        if hasattr(self, "t_yukfan"):
+            self.load_yukfan()
         if hasattr(self, "t_yuk"):
             self.load_yuklama()
 
@@ -1282,11 +1442,12 @@ class App(tk.Tk):
                   "har bir o'qituvchining jami yuklamasini va me'yorga nisbatan bajarilishini "
                   "o'zi hisoblab beradi."),
 
-            ("h1", "Asosiy bo'limlar (yuqoridagi 4 ta varaq)"),
+            ("h1", "Asosiy bo'limlar (yuqoridagi 5 ta varaq)"),
             ("b", "Professor-O'qituvchilar — o'qituvchilar ro'yxati (F.I.Sh., ilmiy unvon, stavka, me'yor)."),
             ("b", "Fanlar yuklamasi — fanlar ro'yxati (nomi, yo'nalishi, ta'lim turi, tili, ma'ruza/amaliyot soatlari)."),
             ("b", "Taqsimot — fanlarni o'qituvchilarga biriktirish."),
-            ("b", "Yuklama (hisobot) — har bir o'qituvchining jami soatlari va bajarilish foizi."),
+            ("b", "Yuklama (hisobot - fanlar) — har bir fan bo'yicha reja / berilgan / qoldiq soatlar va o'qituvchilar."),
+            ("b", "Yuklama (hisobot - o'qituvchi) — har bir o'qituvchining jami soatlari va bajarilish foizi."),
 
             ("h1", "1-qadam: O'qituvchilarni kiritish"),
             ("p", "Yuqoridan «Professor-O'qituvchilar» varag'ini tanlang."),
@@ -1318,23 +1479,32 @@ class App(tk.Tk):
             ("b", "«Soat» avtomatik to'ldiriladi; kerak bo'lsa o'zgartiring. So'ng «Saqlash»."),
 
             ("h2", "Biriktirish qoidalari"),
-            ("b", "Ma'ruza — butun fan uchun bitta o'qituvchi o'qiydi (bo'linmaydi). Biriktirilgach, ro'yxatdan chiqadi."),
+            ("b", "Ma'ruza — jami soat = Ma'ruza × Potok. Har bir potok bitta o'qituvchi tomonidan to'liq "
+                  "o'qitiladi (potok soatini bo'lish mumkin emas). Bitta o'qituvchi bir yoki bir nechta potok "
+                  "olishi mumkin — «Potok soni» maydonida tanlang, soat avtomatik hisoblanadi. Barcha potoklar "
+                  "taqsimlangach, fan ro'yxatdan chiqadi."),
             ("b", "Amaliyot — guruhlar bo'yicha bo'linadi (jami = Amaliyot × Guruh). Bir guruhni bir "
                   "o'qituvchiga, boshqasini boshqasiga berish mumkin. To'liq tarqatilmaguncha ro'yxatda "
                   "«qoldi X/Y soat» ko'rinishida turadi."),
             ("b", "Bitta o'qituvchi ham ma'ruzani, ham amaliyotni o'qishi mumkin."),
             ("b", "Reyting — faqat shu fanning ma'ruzasi yoki amaliyotini o'qiydigan o'qituvchiga biriktiriladi."),
 
-            ("h1", "4-bo'lim: Yuklama (hisobot)"),
-            ("p", "Bu yerda har bir o'qituvchining me'yori, biriktirilgan soatlari, farqi va bajarilish "
-                  "foizi ko'rsatiladi. Yangilash uchun «Yangilash» tugmasini bosing."),
+            ("h1", "4-bo'lim: Yuklama hisobotlari"),
+            ("p", "«Yuklama (hisobot - fanlar)» — har bir fan bo'yicha rejadagi soatlar (Ma'ruza×Potok, "
+                  "Amaliyot×Guruh, Reyting), berilgan va qolgan soatlar hamda fanni o'qitayotgan "
+                  "o'qituvchilar ro'yxati ko'rsatiladi."),
+            ("p", "«Yuklama (hisobot - o'qituvchi)» — har bir o'qituvchining me'yori, biriktirilgan soatlari, "
+                  "farqi va bajarilish foizi ko'rsatiladi. Yangilash uchun «Yangilash» tugmasini bosing."),
             ("p", "«Professor-O'qituvchilar» varag'ida o'ng yuqorida «Jami meyor» — barcha o'qituvchilarning "
                   "umumiy me'yori ko'rsatiladi."),
 
             ("h1", "Foydali imkoniyatlar"),
             ("b", "Saralash — istalgan ustun sarlavhasini bosing, ma'lumot o'sha ustun bo'yicha tartiblanadi "
                   "(yana bossangiz — teskari tartib). Sonlar son bo'yicha, matn alifbo bo'yicha saralanadi."),
-            ("b", "Qidirish — har bir varaqdagi «Qidirish» maydoniga yozib, kerakli yozuvni tez toping."),
+            ("b", "Qidirish — har bir varaqdagi «Qidirish» maydoniga yozib, kerakli yozuvni tez toping. "
+                  "Qidiruv barcha ustunlar bo'yicha ishlaydi: ID, F.I.Sh., fan nomi, yo'nalish, ta'lim turi, "
+                  "til, semestr va h.k. Bir nechta so'z yozsangiz, hammasi mos kelgan qatorlar chiqadi "
+                  "(masalan: «ekonometrika kunduzgi»)."),
             ("b", "CSV eksport — «Taqsimot» va «Yuklama» bo'limlarida ma'lumotni Excel uchun CSV faylga saqlash mumkin."),
             ("b", "Takror fanlar — bir xil fan ikki marta kiritilgan bo'lsa, «Takror tozalash» tugmasi ularni "
                   "tozalaydi. CSV import paytida takror fanlarning farqi (masalan reyting) avtomatik qavs ichida belgilanadi."),
