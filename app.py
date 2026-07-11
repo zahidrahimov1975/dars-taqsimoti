@@ -13,6 +13,7 @@ The database file `dars_taqsimoti.db` lives next to the .exe.
 import os
 import sys
 import csv
+import time
 import sqlite3
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
@@ -642,11 +643,19 @@ class App(tk.Tk):
                   style="Subtitle.TLabel").pack(anchor="w")
         right = ttk.Frame(header, style="Header.TFrame")
         right.pack(side="right")
-        ttk.Button(right, text="Yordam markazi", style="Ghost.TButton",
-                   command=self.show_help).pack(anchor="e")
+        hbtns = ttk.Frame(right, style="Header.TFrame")
+        hbtns.pack(anchor="e")
+        ttk.Button(hbtns, text="↩ Ortga qaytarish (Ctrl+Z)", style="Ghost.TButton",
+                   command=self.show_undo).pack(side="left")
+        ttk.Button(hbtns, text="Yordam markazi", style="Ghost.TButton",
+                   command=self.show_help).pack(side="left", padx=(8, 0))
         ttk.Label(right, text="Developed by Zaxid Raximov",
                   style="Dev.TLabel").pack(anchor="e", pady=(6, 0))
         tk.Frame(self, height=1, background=UI["border"]).pack(fill="x")
+
+        self.undo_stack = []          # deleted-rows history (session only)
+        self.bind("<Control-z>", self.undo_last)
+        self.bind("<Control-Z>", self.undo_last)
 
         self.nb = ttk.Notebook(self)
         self.nb.pack(fill="both", expand=True, padx=10, pady=(0, 8))
@@ -750,6 +759,114 @@ class App(tk.Tk):
             st.configure(s, background="#C8D0DD", troughcolor=u["bg"], borderwidth=0,
                          arrowcolor=u["muted"], relief="flat")
             st.map(s, background=[("active", "#B4BFD0")])
+
+    # ---------- undo (ortga qaytarish) ----------
+    _RESTORE_ORDER = {"Domlalar": 0, "Fanlar": 1, "Taqsimot": 2}
+
+    def _record_delete(self, desc, items):
+        """Save one delete operation to the undo stack.
+        items: list of (table_name, row_dict) captured BEFORE deletion.
+        One bulk delete (e.g. 50 rows at once) = one operation."""
+        if not items:
+            return
+        self.undo_stack.append({"time": time.strftime("%H:%M:%S"), "desc": desc, "items": items})
+        if len(self.undo_stack) > 100:
+            self.undo_stack.pop(0)
+
+    @staticmethod
+    def _snap(con, table, id_col, ids):
+        """Snapshot full rows of `table` for given ids as (table, dict) items."""
+        if not ids:
+            return []
+        qm = ",".join("?" * len(ids))
+        return [(table, dict(r)) for r in
+                con.execute(f"SELECT * FROM {table} WHERE {id_col} IN ({qm})", list(ids))]
+
+    def _restore_op(self, op):
+        """Re-insert deleted rows with their original IDs. Parents (Domlalar, Fanlar)
+        are restored before Taqsimot so foreign keys stay valid."""
+        ok = fail = 0
+        for table, row in sorted(op["items"], key=lambda x: self._RESTORE_ORDER.get(x[0], 9)):
+            cols = list(row.keys())
+            try:
+                self.con.execute(
+                    f"INSERT INTO {table}({','.join(cols)}) VALUES({','.join('?' * len(cols))})",
+                    [row[c] for c in cols])
+                ok += 1
+            except sqlite3.IntegrityError:
+                fail += 1      # e.g. parent row deleted in another operation and not yet restored
+        self.con.commit()
+        self.refresh_all()
+        return ok, fail
+
+    def undo_last(self, event=None):
+        """Ctrl+Z — restore the most recent delete operation."""
+        if not self.undo_stack:
+            messagebox.showinfo("Ortga qaytarish", "Qaytariladigan amal yo'q.")
+            return
+        op = self.undo_stack.pop()
+        ok, fail = self._restore_op(op)
+        msg = f"Qaytarildi: {op['desc']}\n{ok} ta yozuv tiklandi."
+        if fail:
+            msg += (f"\n{fail} ta yozuv tiklanmadi — unga bog'liq o'qituvchi/fan boshqa amalda "
+                    "o'chirilgan. Avval o'sha amalni qaytaring.")
+        messagebox.showinfo("Ortga qaytarish", msg)
+
+    def show_undo(self):
+        """Dialog listing delete operations (latest first); the user picks which to restore."""
+        if not self.undo_stack:
+            messagebox.showinfo("Ortga qaytarish", "Qaytariladigan amal yo'q.\n\n"
+                                "Bu ro'yxatga o'chirilgan yozuvlar tushadi (dastur yopilguncha saqlanadi).")
+            return
+        win = tk.Toplevel(self)
+        win.title("Ortga qaytarish — o'chirilgan amallar")
+        win.geometry("640x380")
+        win.transient(self)
+        win.configure(background=UI["bg"])
+        try:
+            win.geometry(f"+{self.winfo_rootx() + 120}+{self.winfo_rooty() + 90}")
+        except Exception:
+            pass
+        frm = ttk.Frame(win, padding=12)
+        frm.pack(fill="both", expand=True)
+        ttk.Label(frm, text="Qaysi amalni ortga qaytarish kerak? (eng oxirgisi tepada)",
+                  style="Muted.TLabel").pack(anchor="w", pady=(0, 8))
+        cols = ["#", "Vaqt", "Amal", "Yozuvlar"]
+        tree = self._make_tree(frm, cols, [40, 70, 380, 80],
+                               {"#": "center", "Vaqt": "center", "Yozuvlar": "e"}, stretch=("Amal",))
+        # latest first; iid = index in undo_stack
+        for pos, idx in enumerate(range(len(self.undo_stack) - 1, -1, -1), 1):
+            op = self.undo_stack[idx]
+            tree.insert("", "end", iid=str(idx),
+                        values=(pos, op["time"], op["desc"], len(op["items"])),
+                        tags=("odd",) if pos % 2 == 0 else ())
+
+        def restore(_e=None):
+            sel = tree.selection()
+            if not sel:
+                messagebox.showinfo("Ortga qaytarish", "Avval amalni tanlang.", parent=win)
+                return
+            idx = int(sel[0])
+            op = self.undo_stack.pop(idx)
+            ok, fail = self._restore_op(op)
+            msg = f"Qaytarildi: {op['desc']}\n{ok} ta yozuv tiklandi."
+            if fail:
+                msg += (f"\n{fail} ta yozuv tiklanmadi — unga bog'liq o'qituvchi/fan boshqa amalda "
+                        "o'chirilgan. Avval o'sha amalni qaytaring.")
+            messagebox.showinfo("Ortga qaytarish", msg, parent=win)
+            win.destroy()
+            if self.undo_stack:
+                self.show_undo()
+
+        tree.bind("<Double-1>", restore)
+        btns = ttk.Frame(frm)
+        btns.pack(fill="x", pady=(10, 0))
+        ttk.Button(btns, text="Tanlanganini qaytarish", style="Primary.TButton",
+                   command=restore).pack(side="right")
+        ttk.Button(btns, text="Yopish", style="Secondary.TButton",
+                   command=win.destroy).pack(side="right", padx=(0, 8))
+        win.bind("<Escape>", lambda e: win.destroy())
+        win.grab_set()
 
     # ---------- generic helpers ----------
     def _make_tab(self, title):
@@ -1009,7 +1126,11 @@ class App(tk.Tk):
             msg += (f"\n\nQuyidagi {len(used)} tasi taqsimotda ishlatilgani uchun O'CHIRILMAYDI:\n{names}")
         if not messagebox.askyesno("Tasdiqlang", msg):
             return
-        self.con.executemany("DELETE FROM Domlalar WHERE DomlaID=?", [(i,) for i, _ in free])
+        free_ids = [i for i, _ in free]
+        names = ", ".join(short_name(f) for _, f in free[:3]) + ("..." if len(free) > 3 else "")
+        self._record_delete(f"Professor-o'qituvchilar: {len(free)} ta o'chirildi ({names})",
+                            self._snap(self.con, "Domlalar", "DomlaID", free_ids))
+        self.con.executemany("DELETE FROM Domlalar WHERE DomlaID=?", [(i,) for i in free_ids])
         self.con.commit()
         self.refresh_all()
 
@@ -1149,7 +1270,11 @@ class App(tk.Tk):
             msg += (f"\n\nQuyidagi {len(used)} tasi taqsimotda ishlatilgani uchun O'CHIRILMAYDI:\n{names}")
         if not messagebox.askyesno("Tasdiqlang", msg):
             return
-        self.con.executemany("DELETE FROM Fanlar WHERE FanID=?", [(i,) for i, _ in free])
+        free_ids = [i for i, _ in free]
+        names = ", ".join(f for _, f in free[:3]) + ("..." if len(free) > 3 else "")
+        self._record_delete(f"Fanlar: {len(free)} ta o'chirildi ({names})",
+                            self._snap(self.con, "Fanlar", "FanID", free_ids))
+        self.con.executemany("DELETE FROM Fanlar WHERE FanID=?", [(i,) for i in free_ids])
         self.con.commit()
         self.refresh_all()
 
@@ -1217,6 +1342,12 @@ class App(tk.Tk):
         warn += "\n\nDavom etilsinmi?"
         if not messagebox.askyesno("Takror fanlarni tozalash", warn):
             return
+        items = (self._snap(self.con, "Fanlar", "FanID", dup_ids) +
+                 [("Taqsimot", dict(r)) for r in
+                  self.con.execute(f"SELECT * FROM Taqsimot WHERE FanID IN ({qm})", dup_ids)])
+        self._record_delete(f"Takror tozalash: {len(dup_ids)} ta fan"
+                            + (f" va {n_assign} ta taqsimot yozuvi" if n_assign else "")
+                            + " o'chirildi", items)
         self.con.execute(f"DELETE FROM Taqsimot WHERE FanID IN ({qm})", dup_ids)
         self.con.execute(f"DELETE FROM Fanlar WHERE FanID IN ({qm})", dup_ids)
         self.con.commit()
@@ -1301,6 +1432,8 @@ class App(tk.Tk):
         msg = (f"{len(ids)} ta taqsimot yozuvi o'chirilsinmi?" if len(ids) > 1
                else "Tanlangan yozuv o'chirilsinmi?")
         if messagebox.askyesno("Tasdiqlang", msg):
+            self._record_delete(f"Taqsimot: {len(ids)} ta yozuv o'chirildi",
+                                self._snap(self.con, "Taqsimot", "TaqsimotID", ids))
             self.con.executemany("DELETE FROM Taqsimot WHERE TaqsimotID=?", [(i,) for i in ids])
             self.con.commit()
             self.refresh_all()
@@ -1604,6 +1737,10 @@ class App(tk.Tk):
                   "yoki Ctrl+A (barchasini tanlaydi). So'ng «O'chirish» tugmasi bilan tanlangan barcha "
                   "qatorlarni bir vaqtda o'chirish mumkin. Taqsimotda ishlatilgan o'qituvchi/fanlar "
                   "o'chirilmaydi — ular ro'yxatda ko'rsatiladi, qolganlari o'chiriladi."),
+            ("b", "Ortga qaytarish — o'chirilgan yozuvlarni tiklash mumkin. Ctrl+Z eng oxirgi o'chirish "
+                  "amalini darhol qaytaradi. Yuqoridagi «↩ Ortga qaytarish» tugmasi esa barcha o'chirish "
+                  "amallari ro'yxatini ochadi — birdaniga o'chirilgan qatorlar (masalan 50 ta) bitta amal "
+                  "sifatida ko'rsatiladi va istalganini tanlab qaytarish mumkin. Ro'yxat dastur yopilguncha saqlanadi."),
             ("b", "Qidirish — har bir varaqdagi «Qidirish» maydoniga yozib, kerakli yozuvni tez toping. "
                   "Qidiruv barcha ustunlar bo'yicha ishlaydi: ID, F.I.Sh., fan nomi, yo'nalish, ta'lim turi, "
                   "til, semestr va h.k. Bir nechta so'z yozsangiz, hammasi mos kelgan qatorlar chiqadi "
