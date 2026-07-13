@@ -144,6 +144,149 @@ def short_name(fio):
     return " ".join(parts[:2]) if parts else (fio or "")
 
 
+# ----- Professional Excel (.xlsx) writer — stdlib only -----
+# Look: merged title row, colored header with wrapped 2-line captions,
+# AutoFilter (sort/filter arrows on every column), frozen title+header,
+# thin grid borders, zebra striping, centered numbers, real percent cells,
+# red highlighting for over-norm rows.
+def _xesc(s):
+    return (str(s).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+            .replace('"', "&quot;"))
+
+
+def _col_letter(n):
+    s = ""
+    while n >= 0:
+        s = chr(n % 26 + 65) + s
+        n = n // 26 - 1
+    return s
+
+
+_XLSX_STYLES = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+<fonts count="4">
+<font><sz val="11"/><color rgb="FF1F2937"/><name val="Calibri"/></font>
+<font><b/><sz val="11"/><color rgb="FFFFFFFF"/><name val="Calibri"/></font>
+<font><b/><sz val="14"/><color rgb="FF1D4ED8"/><name val="Calibri"/></font>
+<font><sz val="11"/><color rgb="FFB91C1C"/><name val="Calibri"/></font>
+</fonts>
+<fills count="5">
+<fill><patternFill patternType="none"/></fill>
+<fill><patternFill patternType="gray125"/></fill>
+<fill><patternFill patternType="solid"><fgColor rgb="FF2563EB"/><bgColor indexed="64"/></patternFill></fill>
+<fill><patternFill patternType="solid"><fgColor rgb="FFF2F6FC"/><bgColor indexed="64"/></patternFill></fill>
+<fill><patternFill patternType="solid"><fgColor rgb="FFFBE9E9"/><bgColor indexed="64"/></patternFill></fill>
+</fills>
+<borders count="2">
+<border><left/><right/><top/><bottom/><diagonal/></border>
+<border><left style="thin"><color rgb="FFC9D2E0"/></left><right style="thin"><color rgb="FFC9D2E0"/></right><top style="thin"><color rgb="FFC9D2E0"/></top><bottom style="thin"><color rgb="FFC9D2E0"/></bottom><diagonal/></border>
+</borders>
+<cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>
+<cellXfs count="12">
+<xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>
+<xf numFmtId="0" fontId="2" fillId="0" borderId="0" xfId="0" applyFont="1" applyAlignment="1"><alignment horizontal="left" vertical="center"/></xf>
+<xf numFmtId="0" fontId="1" fillId="2" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1" applyAlignment="1"><alignment horizontal="center" vertical="center" wrapText="1"/></xf>
+<xf numFmtId="0" fontId="0" fillId="0" borderId="1" xfId="0" applyBorder="1" applyAlignment="1"><alignment horizontal="center" vertical="center"/></xf>
+<xf numFmtId="0" fontId="0" fillId="0" borderId="1" xfId="0" applyBorder="1" applyAlignment="1"><alignment horizontal="left" vertical="center"/></xf>
+<xf numFmtId="0" fontId="0" fillId="3" borderId="1" xfId="0" applyFill="1" applyBorder="1" applyAlignment="1"><alignment horizontal="center" vertical="center"/></xf>
+<xf numFmtId="0" fontId="0" fillId="3" borderId="1" xfId="0" applyFill="1" applyBorder="1" applyAlignment="1"><alignment horizontal="left" vertical="center"/></xf>
+<xf numFmtId="9" fontId="0" fillId="0" borderId="1" xfId="0" applyNumberFormat="1" applyBorder="1" applyAlignment="1"><alignment horizontal="center" vertical="center"/></xf>
+<xf numFmtId="9" fontId="0" fillId="3" borderId="1" xfId="0" applyNumberFormat="1" applyFill="1" applyBorder="1" applyAlignment="1"><alignment horizontal="center" vertical="center"/></xf>
+<xf numFmtId="0" fontId="3" fillId="4" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1" applyAlignment="1"><alignment horizontal="center" vertical="center"/></xf>
+<xf numFmtId="0" fontId="3" fillId="4" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1" applyAlignment="1"><alignment horizontal="left" vertical="center"/></xf>
+<xf numFmtId="9" fontId="3" fillId="4" borderId="1" xfId="0" applyNumberFormat="1" applyFont="1" applyFill="1" applyBorder="1" applyAlignment="1"><alignment horizontal="center" vertical="center"/></xf>
+</cellXfs>
+<cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles>
+</styleSheet>"""
+
+
+def write_pro_xlsx(path, sheet_name, title, headers, widths, rows,
+                   text_cols=(), pct_cols=(), danger_rows=()):
+    """Create the professional report file.
+    - Row 1: merged bold title (report name + date).
+    - Row 2: colored header with wrapped captions and an AutoFilter, so every
+      column gets Excel's built-in sort/filter dropdown.
+    - Title and header stay frozen while scrolling.
+    - Data: grid borders, zebra rows, centered numbers, left-aligned text
+      columns, percent columns as real % cells (sortable as numbers),
+      over-norm rows (danger_rows) shown in red.
+    headers may contain '\n'; widths are Excel column widths;
+    pct_cols values must be fractions (0.45 = 45%)."""
+    import zipfile
+    n = len(headers)
+    last = _col_letter(n - 1)
+    last_row = 2 + len(rows)
+    cols_xml = "".join(f'<col min="{i+1}" max="{i+1}" width="{w}" customWidth="1"/>'
+                       for i, w in enumerate(widths))
+
+    def sid(ci, danger, stripe):
+        if ci in pct_cols:
+            return 11 if danger else (8 if stripe else 7)
+        if ci in text_cols:
+            return 10 if danger else (6 if stripe else 4)
+        return 9 if danger else (5 if stripe else 3)
+
+    body = [f'<row r="1" ht="26" customHeight="1">'
+            f'<c r="A1" s="1" t="inlineStr"><is><t xml:space="preserve">{_xesc(title)}</t></is></c></row>',
+            '<row r="2" ht="32" customHeight="1">']
+    for i, h in enumerate(headers):
+        body.append(f'<c r="{_col_letter(i)}2" s="2" t="inlineStr">'
+                    f'<is><t xml:space="preserve">{_xesc(h)}</t></is></c>')
+    body.append("</row>")
+    for r_i, row in enumerate(rows):
+        ri = r_i + 3
+        stripe = r_i % 2 == 1
+        danger = r_i in danger_rows
+        body.append(f'<row r="{ri}">')
+        for ci, v in enumerate(row):
+            ref, s = f"{_col_letter(ci)}{ri}", sid(ci, danger, stripe)
+            if isinstance(v, (int, float)) and not isinstance(v, bool):
+                num = int(v) if ci not in pct_cols and float(v) == int(v) else round(float(v), 6)
+                body.append(f'<c r="{ref}" s="{s}"><v>{num}</v></c>')
+            else:
+                body.append(f'<c r="{ref}" s="{s}" t="inlineStr">'
+                            f'<is><t xml:space="preserve">{_xesc(v)}</t></is></c>')
+        body.append("</row>")
+    sheet = (f'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+             f'<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
+             f'<sheetViews><sheetView showGridLines="0" workbookViewId="0">'
+             f'<pane ySplit="2" topLeftCell="A3" activePane="bottomLeft" state="frozen"/>'
+             f'<selection pane="bottomLeft" activeCell="A3" sqref="A3"/>'
+             f'</sheetView></sheetViews>'
+             f'<cols>{cols_xml}</cols><sheetData>{"".join(body)}</sheetData>'
+             f'<autoFilter ref="A2:{last}{last_row}"/>'
+             f'<mergeCells count="1"><mergeCell ref="A1:{last}1"/></mergeCells>'
+             f'</worksheet>')
+    workbook = (f'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+                f'<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" '
+                f'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
+                f'<sheets><sheet name="{_xesc(sheet_name)}" sheetId="1" r:id="rId1"/></sheets></workbook>')
+    wb_rels = ('<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+               '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+               '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>'
+               '<Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>'
+               '</Relationships>')
+    root_rels = ('<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+                 '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+                 '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>'
+                 '</Relationships>')
+    ctypes = ('<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+              '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
+              '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>'
+              '<Default Extension="xml" ContentType="application/xml"/>'
+              '<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>'
+              '<Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>'
+              '<Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>'
+              '</Types>')
+    with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as z:
+        z.writestr("[Content_Types].xml", ctypes)
+        z.writestr("_rels/.rels", root_rels)
+        z.writestr("xl/workbook.xml", workbook)
+        z.writestr("xl/_rels/workbook.xml.rels", wb_rels)
+        z.writestr("xl/styles.xml", _XLSX_STYLES)
+        z.writestr("xl/worksheets/sheet1.xml", sheet)
+
+
 def fan_rules(dlg):
     """Reyting only applies to Masofaviy subjects; otherwise disable the field and force 0."""
     w = dlg.widgets.get("Reyting")
@@ -1366,7 +1509,8 @@ class App(tk.Tk):
         ttk.Button(bar, text="+ Qo'shish", style="Primary.TButton", command=self.taq_add).pack(side="left")
         ttk.Button(bar, text="Tahrirlash", style="Secondary.TButton", command=self.taq_edit).pack(side="left", padx=6)
         ttk.Button(bar, text="O'chirish", style="Danger.TButton", command=self.taq_del).pack(side="left")
-        ttk.Button(bar, text="CSV ga eksport", style="Secondary.TButton", command=self.taq_export).pack(side="left", padx=(16, 0))
+        ttk.Button(bar, text="Excel ga eksport", style="Secondary.TButton", command=self.taq_export_xlsx).pack(side="left", padx=(16, 0))
+        ttk.Button(bar, text="CSV ga eksport", style="Secondary.TButton", command=self.taq_export).pack(side="left", padx=6)
         self.taq_q = tk.StringVar()
         self._add_search(bar, self.taq_q)
         self.taq_q.trace_add("write", lambda *_: self.load_taqsimot())
@@ -1438,6 +1582,36 @@ class App(tk.Tk):
             self.con.commit()
             self.refresh_all()
 
+    def taq_export_xlsx(self):
+        """Professional Excel of all assignments with AutoFilter on every column."""
+        path = filedialog.asksaveasfilename(defaultextension=".xlsx",
+                                            filetypes=[("Excel", "*.xlsx")], initialfile="taqsimot.xlsx")
+        if not path:
+            return
+        sql = """SELECT t.TaqsimotID, d.FIO, f.FanNomi, f.Til, f.Yonalish, f.TalimTuri, f.Semestr,
+                        t.TurSoat, t.Soat
+                 FROM Taqsimot t
+                 LEFT JOIN Domlalar d ON d.DomlaID=t.DomlaID
+                 LEFT JOIN Fanlar f   ON f.FanID=t.FanID
+                 ORDER BY d.FIO COLLATE NOCASE, f.FanNomi COLLATE NOCASE"""
+        headers = ["№", "Professor-o'qituvchi\n(F.I.Sh.)", "Fan nomi", "Til", "Yo'nalish",
+                   "Ta'lim\nturi", "Sem.", "Yuklama\nturi", "Soat"]
+        widths = [5, 32, 34, 9, 17, 11, 6, 11, 8]
+        rows = []
+        for n, r in enumerate(self.con.execute(sql), 1):
+            rows.append([n, r["FIO"] or "—", r["FanNomi"] or "—", r["Til"] or "",
+                         r["Yonalish"] or "", r["TalimTuri"] or "",
+                         int(r["Semestr"]) if r["Semestr"] else 0, r["TurSoat"] or "", r["Soat"] or 0])
+        try:
+            write_pro_xlsx(path, "Taqsimot",
+                           f"Dars taqsimoti  ·  {time.strftime('%d.%m.%Y')}",
+                           headers, widths, rows, text_cols={1, 2, 3, 4, 5, 7})
+            messagebox.showinfo("Tayyor", f"Excel fayl saqlandi:\n{path}\n\n"
+                                "Sarlavhadagi tugmalar orqali istalgan ustun bo'yicha "
+                                "saralash va filtrlash mumkin.")
+        except OSError as e:
+            messagebox.showerror("Xato", str(e))
+
     def taq_export(self):
         path = filedialog.asksaveasfilename(defaultextension=".csv",
                                             filetypes=[("CSV", "*.csv")], initialfile="taqsimot.csv")
@@ -1463,7 +1637,8 @@ class App(tk.Tk):
     def _build_yukfan(self):
         _, bar, body = self._make_tab("  Yuklama (hisobot - fanlar)  ")
         ttk.Button(bar, text="Yangilash", style="Primary.TButton", command=self.load_yukfan).pack(side="left")
-        ttk.Button(bar, text="CSV ga eksport", style="Secondary.TButton", command=self.yukfan_export).pack(side="left", padx=8)
+        ttk.Button(bar, text="Excel ga eksport", style="Secondary.TButton", command=self.yukfan_export_xlsx).pack(side="left", padx=8)
+        ttk.Button(bar, text="CSV ga eksport", style="Secondary.TButton", command=self.yukfan_export).pack(side="left")
         self.yukfan_q = tk.StringVar()
         self._add_search(bar, self.yukfan_q)
         self.yukfan_q.trace_add("write", lambda *_: self.load_yukfan())
@@ -1546,11 +1721,40 @@ class App(tk.Tk):
         except OSError as e:
             messagebox.showerror("Xato", str(e))
 
+    def yukfan_export_xlsx(self):
+        """Professional Excel report for courses: title, colored header with
+        AutoFilter (sort/filter dropdowns), frozen header, zebra grid, real % cells."""
+        path = filedialog.asksaveasfilename(defaultextension=".xlsx",
+                                            filetypes=[("Excel", "*.xlsx")],
+                                            initialfile="yuklama_fanlar_hisobot.xlsx")
+        if not path:
+            return
+        headers = ["ID", "Fan nomi", "Yo'nalish", "Ta'lim\nturi", "Til", "Sem.",
+                   "Ma'ruza\n(jami)", "Ma'ruza\nberilgan", "Amaliyot\n(jami)", "Amaliyot\nberilgan",
+                   "Reyting\n(jami)", "Reyting\nberilgan", "Jami", "Berilgan", "Qoldiq",
+                   "Bajarilish\n%", "O'qituvchilar"]
+        widths = [6, 28, 17, 11, 9, 6, 9, 9, 10, 9, 9, 9, 8, 9, 8, 10, 36]
+        rows = []
+        for d in sorted(self._fan_report_rows(), key=lambda x: x["pct"], reverse=True):
+            rows.append([d["id"], d["nomi"] or "", d["yon"] or "", d["talim"] or "", d["til"] or "",
+                         d["sem"] or 0, d["mj"], d["mb"], d["aj"], d["ab"], d["rj"], d["rb"],
+                         d["jami"], d["berilgan"], d["qoldiq"], d["pct"] / 100, d["oqit"]])
+        try:
+            write_pro_xlsx(path, "Yuklama - fanlar",
+                           f"Yuklama hisoboti — fanlar  ·  {time.strftime('%d.%m.%Y')}",
+                           headers, widths, rows, text_cols={1, 2, 3, 4, 16}, pct_cols={15})
+            messagebox.showinfo("Tayyor", f"Excel hisobot saqlandi:\n{path}\n\n"
+                                "Sarlavhadagi tugmalar orqali istalgan ustun bo'yicha "
+                                "saralash va filtrlash mumkin.")
+        except OSError as e:
+            messagebox.showerror("Xato", str(e))
+
     # ================= YUKLAMA (hisobot - o'qituvchi) =================
     def _build_yuklama(self):
         _, bar, body = self._make_tab("  Yuklama (hisobot - o'qituvchi)  ")
         ttk.Button(bar, text="Yangilash", style="Primary.TButton", command=self.load_yuklama).pack(side="left")
-        ttk.Button(bar, text="CSV ga eksport", style="Secondary.TButton", command=self.yuk_export).pack(side="left", padx=8)
+        ttk.Button(bar, text="Excel ga eksport", style="Secondary.TButton", command=self.yuk_export_xlsx).pack(side="left", padx=8)
+        ttk.Button(bar, text="CSV ga eksport", style="Secondary.TButton", command=self.yuk_export).pack(side="left")
         self.yuk_q = tk.StringVar()
         self._add_search(bar, self.yuk_q)
         self.yuk_q.trace_add("write", lambda *_: self.load_yuklama())
@@ -1591,6 +1795,36 @@ class App(tk.Tk):
         if over:
             summary += f"   |   ⚠ Meyordan ortiq: {over} ta"
         self.yuk_summary.set(summary)
+
+    def yuk_export_xlsx(self):
+        """Professional Excel report for teachers: AutoFilter, frozen header,
+        real % cells, over-norm rows highlighted in red."""
+        path = filedialog.asksaveasfilename(defaultextension=".xlsx",
+                                            filetypes=[("Excel", "*.xlsx")],
+                                            initialfile="yuklama_oqituvchi_hisobot.xlsx")
+        if not path:
+            return
+        headers = ["ID", "F.I.Sh.", "Stavka", "Meyor\n(jami)", "Ma'ruza", "Amaliyot", "Reyting",
+                   "Jami\nberilgan", "Farq", "Bajarilish\n%", "Izoh"]
+        widths = [6, 32, 8, 10, 10, 10, 9, 10, 8, 11, 28]
+        rows, danger = [], set()
+        for i, d in enumerate(sorted(workload_rows(self.con), key=lambda x: x["pct"], reverse=True)):
+            is_over = d["norm"] and d["jami"] > d["norm"] + 1e-9
+            izoh = f"Meyordan ortiq (+{g(d['jami'] - d['norm'])} soat)" if is_over else ""
+            if is_over:
+                danger.add(i)
+            rows.append([d["id"], d["fio"], d["stavka"] or 0, d["norm"], d["maruza"], d["amaliyot"],
+                         d["reyting"], d["jami"], d["diff"], d["pct"] / 100, izoh])
+        try:
+            write_pro_xlsx(path, "Yuklama - o'qituvchilar",
+                           f"Yuklama hisoboti — professor-o'qituvchilar  ·  {time.strftime('%d.%m.%Y')}",
+                           headers, widths, rows, text_cols={1, 10}, pct_cols={9}, danger_rows=danger)
+            messagebox.showinfo("Tayyor", f"Excel hisobot saqlandi:\n{path}\n\n"
+                                "Sarlavhadagi tugmalar orqali istalgan ustun bo'yicha "
+                                "saralash va filtrlash mumkin. Meyordan ortiq o'qituvchilar "
+                                "qizil rangda belgilangan.")
+        except OSError as e:
+            messagebox.showerror("Xato", str(e))
 
     def yuk_export(self):
         path = filedialog.asksaveasfilename(defaultextension=".csv",
@@ -1745,7 +1979,11 @@ class App(tk.Tk):
                   "Qidiruv barcha ustunlar bo'yicha ishlaydi: ID, F.I.Sh., fan nomi, yo'nalish, ta'lim turi, "
                   "til, semestr va h.k. Bir nechta so'z yozsangiz, hammasi mos kelgan qatorlar chiqadi "
                   "(masalan: «ekonometrika kunduzgi»)."),
-            ("b", "CSV eksport — «Taqsimot» va «Yuklama» bo'limlarida ma'lumotni Excel uchun CSV faylga saqlash mumkin."),
+            ("b", "Excel eksport — «Taqsimot», «Yuklama (hisobot - fanlar)» va «Yuklama (hisobot - o'qituvchi)» "
+                  "bo'limlarida «Excel ga eksport» tugmasi tayyor professional .xlsx fayl beradi: rangli sarlavha, "
+                  "har bir ustunda saralash va filtrlash tugmalari (AutoFilter), muzlatilgan sarlavha, chegarali "
+                  "katakchalar, foizlar haqiqiy % katak sifatida. O'qituvchilar hisobotida meyordan ortiqlar "
+                  "qizil rangda chiqadi. Oddiy CSV eksport ham saqlanib qolgan."),
             ("b", "Takror fanlar — bir xil fan ikki marta kiritilgan bo'lsa, «Takror tozalash» tugmasi ularni "
                   "tozalaydi. CSV import paytida takror fanlarning farqi (masalan reyting) avtomatik qavs ichida belgilanadi."),
 
