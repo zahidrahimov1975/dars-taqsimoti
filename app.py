@@ -14,6 +14,7 @@ import os
 import sys
 import csv
 import time
+import shutil
 import sqlite3
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
@@ -148,7 +149,8 @@ def short_name(fio):
 # Look: merged title row, colored header with wrapped 2-line captions,
 # AutoFilter (sort/filter arrows on every column), frozen title+header,
 # thin grid borders, zebra striping, centered numbers, real percent cells,
-# red highlighting for over-norm rows.
+# red highlighting for over-norm rows, bold JAMI (totals) rows, optional
+# footer lines (signatures), and multi-sheet workbooks.
 def _xesc(s):
     return (str(s).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
             .replace('"', "&quot;"))
@@ -164,25 +166,27 @@ def _col_letter(n):
 
 _XLSX_STYLES = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
-<fonts count="4">
+<fonts count="5">
 <font><sz val="11"/><color rgb="FF1F2937"/><name val="Calibri"/></font>
 <font><b/><sz val="11"/><color rgb="FFFFFFFF"/><name val="Calibri"/></font>
 <font><b/><sz val="14"/><color rgb="FF1D4ED8"/><name val="Calibri"/></font>
 <font><sz val="11"/><color rgb="FFB91C1C"/><name val="Calibri"/></font>
+<font><b/><sz val="11"/><color rgb="FF1F2937"/><name val="Calibri"/></font>
 </fonts>
-<fills count="5">
+<fills count="6">
 <fill><patternFill patternType="none"/></fill>
 <fill><patternFill patternType="gray125"/></fill>
 <fill><patternFill patternType="solid"><fgColor rgb="FF2563EB"/><bgColor indexed="64"/></patternFill></fill>
 <fill><patternFill patternType="solid"><fgColor rgb="FFF2F6FC"/><bgColor indexed="64"/></patternFill></fill>
 <fill><patternFill patternType="solid"><fgColor rgb="FFFBE9E9"/><bgColor indexed="64"/></patternFill></fill>
+<fill><patternFill patternType="solid"><fgColor rgb="FFE8F0FE"/><bgColor indexed="64"/></patternFill></fill>
 </fills>
 <borders count="2">
 <border><left/><right/><top/><bottom/><diagonal/></border>
 <border><left style="thin"><color rgb="FFC9D2E0"/></left><right style="thin"><color rgb="FFC9D2E0"/></right><top style="thin"><color rgb="FFC9D2E0"/></top><bottom style="thin"><color rgb="FFC9D2E0"/></bottom><diagonal/></border>
 </borders>
 <cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>
-<cellXfs count="12">
+<cellXfs count="15">
 <xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>
 <xf numFmtId="0" fontId="2" fillId="0" borderId="0" xfId="0" applyFont="1" applyAlignment="1"><alignment horizontal="left" vertical="center"/></xf>
 <xf numFmtId="0" fontId="1" fillId="2" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1" applyAlignment="1"><alignment horizontal="center" vertical="center" wrapText="1"/></xf>
@@ -195,36 +199,38 @@ _XLSX_STYLES = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <xf numFmtId="0" fontId="3" fillId="4" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1" applyAlignment="1"><alignment horizontal="center" vertical="center"/></xf>
 <xf numFmtId="0" fontId="3" fillId="4" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1" applyAlignment="1"><alignment horizontal="left" vertical="center"/></xf>
 <xf numFmtId="9" fontId="3" fillId="4" borderId="1" xfId="0" applyNumberFormat="1" applyFont="1" applyFill="1" applyBorder="1" applyAlignment="1"><alignment horizontal="center" vertical="center"/></xf>
+<xf numFmtId="0" fontId="4" fillId="5" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1" applyAlignment="1"><alignment horizontal="center" vertical="center"/></xf>
+<xf numFmtId="0" fontId="4" fillId="5" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1" applyAlignment="1"><alignment horizontal="left" vertical="center"/></xf>
+<xf numFmtId="9" fontId="4" fillId="5" borderId="1" xfId="0" applyNumberFormat="1" applyFont="1" applyFill="1" applyBorder="1" applyAlignment="1"><alignment horizontal="center" vertical="center"/></xf>
 </cellXfs>
 <cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles>
 </styleSheet>"""
 
 
-def write_pro_xlsx(path, sheet_name, title, headers, widths, rows,
-                   text_cols=(), pct_cols=(), danger_rows=()):
-    """Create the professional report file.
-    - Row 1: merged bold title (report name + date).
-    - Row 2: colored header with wrapped captions and an AutoFilter, so every
-      column gets Excel's built-in sort/filter dropdown.
-    - Title and header stay frozen while scrolling.
-    - Data: grid borders, zebra rows, centered numbers, left-aligned text
-      columns, percent columns as real % cells (sortable as numbers),
-      over-norm rows (danger_rows) shown in red.
-    headers may contain '\n'; widths are Excel column widths;
-    pct_cols values must be fractions (0.45 = 45%)."""
-    import zipfile
+def _sheet_xml(title, headers, widths, rows, text_cols=(), pct_cols=(),
+               danger_rows=(), total_rows=(), footer_lines=()):
+    """Build one worksheet XML: title row, header row with AutoFilter, data grid,
+    bold JAMI rows (total_rows), plain footer lines below the table."""
     n = len(headers)
     last = _col_letter(n - 1)
     last_row = 2 + len(rows)
+    trail = 0                                    # trailing JAMI rows stay outside the filter
+    while (len(rows) - 1 - trail) in total_rows and trail < len(rows):
+        trail += 1
+    filter_last = max(3, last_row - trail)
     cols_xml = "".join(f'<col min="{i+1}" max="{i+1}" width="{w}" customWidth="1"/>'
                        for i, w in enumerate(widths))
 
-    def sid(ci, danger, stripe):
+    def sid(ci, r_i, stripe):
+        if r_i in total_rows:
+            return 14 if ci in pct_cols else (13 if ci in text_cols else 12)
+        if r_i in danger_rows:
+            return 11 if ci in pct_cols else (10 if ci in text_cols else 9)
         if ci in pct_cols:
-            return 11 if danger else (8 if stripe else 7)
+            return 8 if stripe else 7
         if ci in text_cols:
-            return 10 if danger else (6 if stripe else 4)
-        return 9 if danger else (5 if stripe else 3)
+            return 6 if stripe else 4
+        return 5 if stripe else 3
 
     body = [f'<row r="1" ht="26" customHeight="1">'
             f'<c r="A1" s="1" t="inlineStr"><is><t xml:space="preserve">{_xesc(title)}</t></is></c></row>',
@@ -236,10 +242,9 @@ def write_pro_xlsx(path, sheet_name, title, headers, widths, rows,
     for r_i, row in enumerate(rows):
         ri = r_i + 3
         stripe = r_i % 2 == 1
-        danger = r_i in danger_rows
         body.append(f'<row r="{ri}">')
         for ci, v in enumerate(row):
-            ref, s = f"{_col_letter(ci)}{ri}", sid(ci, danger, stripe)
+            ref, s = f"{_col_letter(ci)}{ri}", sid(ci, r_i, stripe)
             if isinstance(v, (int, float)) and not isinstance(v, bool):
                 num = int(v) if ci not in pct_cols and float(v) == int(v) else round(float(v), 6)
                 body.append(f'<c r="{ref}" s="{s}"><v>{num}</v></c>')
@@ -247,25 +252,49 @@ def write_pro_xlsx(path, sheet_name, title, headers, widths, rows,
                 body.append(f'<c r="{ref}" s="{s}" t="inlineStr">'
                             f'<is><t xml:space="preserve">{_xesc(v)}</t></is></c>')
         body.append("</row>")
-    sheet = (f'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
-             f'<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
-             f'<sheetViews><sheetView showGridLines="0" workbookViewId="0">'
-             f'<pane ySplit="2" topLeftCell="A3" activePane="bottomLeft" state="frozen"/>'
-             f'<selection pane="bottomLeft" activeCell="A3" sqref="A3"/>'
-             f'</sheetView></sheetViews>'
-             f'<cols>{cols_xml}</cols><sheetData>{"".join(body)}</sheetData>'
-             f'<autoFilter ref="A2:{last}{last_row}"/>'
-             f'<mergeCells count="1"><mergeCell ref="A1:{last}1"/></mergeCells>'
-             f'</worksheet>')
+    fr = last_row + 2                            # footer starts after one blank row
+    for k, line in enumerate(footer_lines):
+        body.append(f'<row r="{fr + k}"><c r="A{fr + k}" s="0" t="inlineStr">'
+                    f'<is><t xml:space="preserve">{_xesc(line)}</t></is></c></row>')
+    return (f'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            f'<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
+            f'<sheetViews><sheetView showGridLines="0" workbookViewId="0">'
+            f'<pane ySplit="2" topLeftCell="A3" activePane="bottomLeft" state="frozen"/>'
+            f'<selection pane="bottomLeft" activeCell="A3" sqref="A3"/>'
+            f'</sheetView></sheetViews>'
+            f'<cols>{cols_xml}</cols><sheetData>{"".join(body)}</sheetData>'
+            f'<autoFilter ref="A2:{last}{filter_last}"/>'
+            f'<mergeCells count="1"><mergeCell ref="A1:{last}1"/></mergeCells>'
+            f'</worksheet>')
+
+
+def write_pro_xlsx_multi(path, sheets):
+    """Write a workbook with one or more professional sheets.
+    Each sheet is a dict: name, title, headers, widths, rows, and optional
+    text_cols, pct_cols, danger_rows, total_rows, footer_lines."""
+    import zipfile
+    sheet_tags, rel_tags, ct_over = [], [], []
+    xmls = []
+    for i, sh in enumerate(sheets, 1):
+        sheet_tags.append(f'<sheet name="{_xesc(sh["name"])}" sheetId="{i}" r:id="rId{i}"/>')
+        rel_tags.append(f'<Relationship Id="rId{i}" Type="http://schemas.openxmlformats.org/'
+                        f'officeDocument/2006/relationships/worksheet" Target="worksheets/sheet{i}.xml"/>')
+        ct_over.append(f'<Override PartName="/xl/worksheets/sheet{i}.xml" ContentType='
+                       f'"application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>')
+        xmls.append(_sheet_xml(sh["title"], sh["headers"], sh["widths"], sh["rows"],
+                               sh.get("text_cols", ()), sh.get("pct_cols", ()),
+                               sh.get("danger_rows", ()), sh.get("total_rows", ()),
+                               sh.get("footer_lines", ())))
+    n = len(sheets)
     workbook = (f'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
                 f'<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" '
                 f'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
-                f'<sheets><sheet name="{_xesc(sheet_name)}" sheetId="1" r:id="rId1"/></sheets></workbook>')
+                f'<sheets>{"".join(sheet_tags)}</sheets></workbook>')
     wb_rels = ('<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
                '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
-               '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>'
-               '<Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>'
-               '</Relationships>')
+               + "".join(rel_tags) +
+               f'<Relationship Id="rId{n+1}" Type="http://schemas.openxmlformats.org/officeDocument/'
+               f'2006/relationships/styles" Target="styles.xml"/></Relationships>')
     root_rels = ('<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
                  '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
                  '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>'
@@ -275,7 +304,7 @@ def write_pro_xlsx(path, sheet_name, title, headers, widths, rows,
               '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>'
               '<Default Extension="xml" ContentType="application/xml"/>'
               '<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>'
-              '<Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>'
+              + "".join(ct_over) +
               '<Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>'
               '</Types>')
     with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as z:
@@ -284,7 +313,92 @@ def write_pro_xlsx(path, sheet_name, title, headers, widths, rows,
         z.writestr("xl/workbook.xml", workbook)
         z.writestr("xl/_rels/workbook.xml.rels", wb_rels)
         z.writestr("xl/styles.xml", _XLSX_STYLES)
-        z.writestr("xl/worksheets/sheet1.xml", sheet)
+        for i, x in enumerate(xmls, 1):
+            z.writestr(f"xl/worksheets/sheet{i}.xml", x)
+
+
+def write_pro_xlsx(path, sheet_name, title, headers, widths, rows,
+                   text_cols=(), pct_cols=(), danger_rows=(), total_rows=(), footer_lines=()):
+    write_pro_xlsx_multi(path, [{"name": sheet_name, "title": title, "headers": headers,
+                                 "widths": widths, "rows": rows, "text_cols": text_cols,
+                                 "pct_cols": pct_cols, "danger_rows": danger_rows,
+                                 "total_rows": total_rows, "footer_lines": footer_lines}])
+
+
+def read_xlsx_rows(path):
+    """Read the first worksheet of an .xlsx into a list of dicts using the first
+    non-empty row as headers (stdlib only). All values are returned as strings."""
+    import zipfile
+    import xml.etree.ElementTree as ET
+    NS = "{http://schemas.openxmlformats.org/spreadsheetml/2006/main}"
+    with zipfile.ZipFile(path) as z:
+        names = z.namelist()
+        shared = []
+        if "xl/sharedStrings.xml" in names:
+            root = ET.fromstring(z.read("xl/sharedStrings.xml"))
+            for si in root.findall(f"{NS}si"):
+                shared.append("".join(t.text or "" for t in si.iter(f"{NS}t")))
+        sheet = "xl/worksheets/sheet1.xml"
+        if sheet not in names:
+            ws = sorted(n for n in names if n.startswith("xl/worksheets/") and n.endswith(".xml"))
+            if not ws:
+                return []
+            sheet = ws[0]
+        root = ET.fromstring(z.read(sheet))
+    grid = []
+    for row in root.iter(f"{NS}row"):
+        cells = {}
+        for c in row.findall(f"{NS}c"):
+            ref = c.get("r") or ""
+            col = 0
+            for ch in ref:
+                if ch.isalpha():
+                    col = col * 26 + (ord(ch.upper()) - 64)
+                else:
+                    break
+            col -= 1
+            t = c.get("t")
+            if t == "inlineStr":
+                val = "".join(x.text or "" for x in c.iter(f"{NS}t"))
+            else:
+                v = c.find(f"{NS}v")
+                val = v.text if v is not None and v.text is not None else ""
+                if t == "s":
+                    try:
+                        val = shared[int(val)]
+                    except (ValueError, IndexError):
+                        val = ""
+            val = str(val).strip()
+            if val.endswith(".0"):
+                try:
+                    f = float(val)
+                    if f == int(f):
+                        val = str(int(f))
+                except ValueError:
+                    pass
+            if col >= 0:
+                cells[col] = val
+        grid.append(cells)
+    headers, start = None, 0
+    nonempty = [(i, cells) for i, cells in enumerate(grid) if any(v for v in cells.values())]
+    for k, (i, cells) in enumerate(nonempty):
+        filled = sum(1 for v in cells.values() if v)
+        # a lone cell followed by a wider row is a title row, not the header
+        if filled < 2 and k + 1 < len(nonempty) and \
+                sum(1 for v in nonempty[k + 1][1].values() if v) > filled:
+            continue
+        headers, start = cells, i + 1
+        break
+    if not headers:
+        return []
+    hmax = max(headers)
+    hnames = [headers.get(i, "").strip() for i in range(hmax + 1)]
+    out = []
+    for cells in grid[start:]:
+        if not any(v for v in cells.values()):
+            continue
+        out.append({hnames[i]: cells.get(i, "") for i in range(len(hnames)) if hnames[i]})
+    return out
 
 
 def fan_rules(dlg):
@@ -433,7 +547,9 @@ class TaqsimotDialog(tk.Toplevel):
         self.cb_domla.grid(row=1, column=1, columnspan=3, sticky="we", **pad)
 
         ttk.Label(frm, text="— Fan tanlash (filtrlar ixtiyoriy) —",
-                  foreground="#666").grid(row=2, column=0, columnspan=4, sticky="w", pady=(12, 0))
+                  foreground="#666").grid(row=2, column=0, columnspan=2, sticky="w", pady=(12, 0))
+        self.lbl_dinfo = ttk.Label(frm, text="", foreground=UI["brand_dark"], font=(FONT, 9, "bold"))
+        self.lbl_dinfo.grid(row=2, column=2, columnspan=2, sticky="e", pady=(12, 0), padx=6)
 
         ttk.Label(frm, text="Yo'nalish:").grid(row=3, column=0, sticky="w", **pad)
         self.cb_yon = ttk.Combobox(frm, state="readonly", width=22, values=[ALL] + self._distinct("Yonalish"))
@@ -475,6 +591,7 @@ class TaqsimotDialog(tk.Toplevel):
         ttk.Button(btns, text="Saqlash", style="Primary.TButton", command=self._save).pack(side="right")
         ttk.Button(btns, text="Bekor qilish", style="Secondary.TButton", command=self.destroy).pack(side="right", padx=(0, 8))
 
+        self.cb_domla.bind("<<ComboboxSelected>>", lambda e: self._update_domla_info())
         for cb in (self.cb_yon, self.cb_talim, self.cb_sem, self.cb_til):
             cb.bind("<<ComboboxSelected>>", lambda e: self._refresh_fan())
         self.cb_fan.bind("<<ComboboxSelected>>", lambda e: self._on_fan())
@@ -495,6 +612,40 @@ class TaqsimotDialog(tk.Toplevel):
         self.update_idletasks()
         self.geometry(f"+{master.winfo_rootx() + 60}+{master.winfo_rooty() + 50}")
         self.wait_window(self)
+
+    def _update_domla_info(self):
+        """Show the selected teacher's current load vs norm — and, once hours are
+        chosen, the projected load after this assignment."""
+        di = self.cb_domla.current()
+        if di < 0:
+            self.lbl_dinfo.config(text="")
+            return
+        dom_id = self.domla_ids[di]
+        dom = self.con.execute("SELECT Stavka, Meyor1St FROM Domlalar WHERE DomlaID=?",
+                               (dom_id,)).fetchone()
+        norm = meyor_jami(dom["Meyor1St"], dom["Stavka"])
+        if self.editing_id:
+            cur = self.con.execute("SELECT COALESCE(SUM(Soat),0) s FROM Taqsimot "
+                                   "WHERE DomlaID=? AND TaqsimotID<>?",
+                                   (dom_id, self.editing_id)).fetchone()["s"]
+        else:
+            cur = self.con.execute("SELECT COALESCE(SUM(Soat),0) s FROM Taqsimot WHERE DomlaID=?",
+                                   (dom_id,)).fetchone()["s"]
+        try:
+            soat = float(self.var_soat.get().strip().replace(",", ".") or 0)
+        except ValueError:
+            soat = 0
+        if norm:
+            txt = f"Joriy yuklama: {g(cur)}/{g(norm)} soat ({cur / norm * 100:.0f}%)"
+            if soat > 0:
+                new_t = cur + soat
+                mark = " ⚠" if new_t > norm + 1e-9 else ""
+                txt += f"  →  {g(new_t)}/{g(norm)} ({new_t / norm * 100:.0f}%){mark}"
+        else:
+            txt = f"Joriy yuklama: {g(cur)} soat (meyor kiritilmagan)"
+            if soat > 0:
+                txt += f"  →  {g(cur + soat)} soat"
+        self.lbl_dinfo.config(text=txt)
 
     def _distinct(self, key):
         seen = []
@@ -646,6 +797,7 @@ class TaqsimotDialog(tk.Toplevel):
                 self.lbl_yuk.config(text=f"{c['TurSoat']}: jami {g(c['total'])} soat, qoldi {g(c['remaining'])} soat")
             else:
                 self.lbl_yuk.config(text=f"{c['TurSoat']}: {g(c['total'])} soat — bitta professor")
+        self._update_domla_info()
 
     def _on_potok(self):
         """Unit count changed -> Soat = count × per-unit hours."""
@@ -658,6 +810,7 @@ class TaqsimotDialog(tk.Toplevel):
             return
         n = max(1, min(n, self._max_units(c)))
         self.var_soat.set(g(n * c["unit"]))
+        self._update_domla_info()
 
     def _clear_filters(self):
         self.cb_yon.set(ALL)
@@ -689,6 +842,7 @@ class TaqsimotDialog(tk.Toplevel):
                     self.var_potok.set(str(max(1, int(round(float(v["Soat"]) / c["unit"])))))
                 except (ValueError, ZeroDivisionError):
                     pass
+        self._update_domla_info()
 
     def _save(self):
         di = self.cb_domla.current()
@@ -762,6 +916,209 @@ class TaqsimotDialog(tk.Toplevel):
         self.destroy()
 
 
+# ===================== Bulk (quick) distribution dialog =====================
+class BulkTaqsimotDialog(tk.Toplevel):
+    """Distribute all potok/guruh units of ONE course component among several
+    professors at once. Each professor gets a spinbox with a unit count
+    (0 = none); the total may not exceed the remaining units. The normal
+    one-by-one dialog stays available too."""
+
+    def __init__(self, master, con):
+        super().__init__(master)
+        self.title("Tezkor taqsimlash — potok/guruhlarni bo'lib chiqish")
+        self.resizable(False, True)
+        self.con = con
+        self.result = None            # list of (DomlaID, FanID, TurSoat, Soat)
+
+        self.domlalar = con.execute(
+            "SELECT DomlaID, FIO, Stavka, Meyor1St FROM Domlalar ORDER BY FIO COLLATE NOCASE").fetchall()
+        self.assigned_by_dom = {r["DomlaID"]: r["s"] for r in con.execute(
+            "SELECT DomlaID, COALESCE(SUM(Soat),0) s FROM Taqsimot GROUP BY DomlaID")}
+        self.comps = self._build_components()
+
+        frm = ttk.Frame(self, padding=(20, 16))
+        frm.pack(fill="both", expand=True)
+        ttk.Label(frm, text="TEZKOR TAQSIMLASH", style="Heading.TLabel").pack(anchor="w")
+        ttk.Label(frm, text="Fan komponentini tanlang, so'ng har bir professorga nechta "
+                            "potok/guruh berilishini kiriting.",
+                  style="Muted.TLabel").pack(anchor="w", pady=(2, 10))
+
+        self.cb_comp = ttk.Combobox(frm, state="readonly", width=72,
+                                    values=[self._label(c) for c in self.comps])
+        self.cb_comp.pack(fill="x")
+        self.cb_comp.bind("<<ComboboxSelected>>", lambda e: self._on_comp())
+        self.lbl_info = ttk.Label(frm, text="—", foreground=UI["brand_dark"], font=(FONT, 10, "bold"))
+        self.lbl_info.pack(anchor="w", pady=(8, 6))
+
+        head = ttk.Frame(frm)
+        head.pack(fill="x")
+        ttk.Label(head, text="Professor-o'qituvchi", width=34,
+                  font=(FONT, 9, "bold")).pack(side="left")
+        ttk.Label(head, text="Joriy yuklama", width=18,
+                  font=(FONT, 9, "bold")).pack(side="left")
+        ttk.Label(head, text="Soni", font=(FONT, 9, "bold")).pack(side="left")
+
+        wrap = tk.Frame(frm, background=UI["surface"], highlightthickness=1,
+                        highlightbackground=UI["border"], bd=0)
+        wrap.pack(fill="both", expand=True)
+        canvas = tk.Canvas(wrap, background=UI["surface"], highlightthickness=0,
+                           width=560, height=300)
+        vs = ttk.Scrollbar(wrap, orient="vertical", command=canvas.yview)
+        canvas.configure(yscrollcommand=vs.set)
+        vs.pack(side="right", fill="y")
+        canvas.pack(side="left", fill="both", expand=True)
+        inner = ttk.Frame(canvas, style="Card.TFrame")
+        canvas.create_window((0, 0), window=inner, anchor="nw")
+        inner.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+        canvas.bind_all("<MouseWheel>",
+                        lambda e: canvas.yview_scroll(int(-e.delta / 120), "units"))
+
+        self.spin_vars = []
+        for i, d in enumerate(self.domlalar):
+            row = ttk.Frame(inner, style="Card.TFrame")
+            row.grid(row=i, column=0, sticky="w", padx=8, pady=2)
+            ttk.Label(row, text=short_name(d["FIO"]), width=34,
+                      background=UI["surface"]).pack(side="left")
+            norm = meyor_jami(d["Meyor1St"], d["Stavka"])
+            cur = self.assigned_by_dom.get(d["DomlaID"], 0)
+            load = f"{g(cur)}/{g(norm)} ({cur / norm * 100:.0f}%)" if norm else f"{g(cur)} soat"
+            ttk.Label(row, text=load, width=18, background=UI["surface"],
+                      foreground=UI["muted"]).pack(side="left")
+            var = tk.StringVar(value="0")
+            sp = ttk.Spinbox(row, from_=0, to=0, textvariable=var, width=6,
+                             command=self._update_counter)
+            sp.pack(side="left")
+            sp.bind("<KeyRelease>", lambda e: self._update_counter())
+            self.spin_vars.append((d["DomlaID"], d["FIO"], var, sp))
+
+        self.lbl_count = ttk.Label(frm, text="", font=(FONT, 10, "bold"))
+        self.lbl_count.pack(anchor="w", pady=(8, 0))
+        btns = ttk.Frame(frm)
+        btns.pack(fill="x", pady=(10, 0))
+        ttk.Button(btns, text="Tarqatish (saqlash)", style="Primary.TButton",
+                   command=self._save).pack(side="right")
+        ttk.Button(btns, text="Bekor qilish", style="Secondary.TButton",
+                   command=self.destroy).pack(side="right", padx=(0, 8))
+
+        if self.comps:
+            self.cb_comp.current(0)
+            self._on_comp()
+        else:
+            self.lbl_info.config(text="Taqsimlanadigan potok/guruh qolmagan.")
+
+        self.transient(master)
+        self.grab_set()
+        self.bind("<Escape>", lambda e: self.destroy())
+        self.update_idletasks()
+        self.geometry(f"+{master.winfo_rootx() + 60}+{master.winfo_rooty() + 40}")
+        self.wait_window(self)
+
+    def _build_components(self):
+        assigned = {(r["FanID"], r["TurSoat"]): r["s"] for r in self.con.execute(
+            "SELECT FanID, TurSoat, COALESCE(SUM(Soat),0) s FROM Taqsimot GROUP BY FanID, TurSoat")}
+        comps = []
+        for r in self.con.execute("SELECT * FROM Fanlar ORDER BY FanNomi COLLATE NOCASE"):
+            for turi, unit, count in (("Maruza", r["Maruza"] or 0, r["Potok"] or 1),
+                                      ("Amaliyot", r["Amaliyot"] or 0, r["Guruh"] or 1)):
+                total = unit * count
+                if unit <= 0 or total <= 0:
+                    continue
+                remaining = total - assigned.get((r["FanID"], turi), 0)
+                units_left = int(round(remaining / unit)) if unit else 0
+                if units_left < 1:
+                    continue
+                comps.append({"FanID": r["FanID"], "row": r, "TurSoat": turi,
+                              "unit": unit, "left": units_left, "remaining": remaining})
+        return comps
+
+    def _label(self, c):
+        r = c["row"]
+        til = (r["Til"] or "").strip()
+        name = f'{r["FanNomi"]} ({til.lower()})' if til else r["FanNomi"]
+        word = "potok" if c["TurSoat"] == "Maruza" else "guruh"
+        extra = " · ".join(x for x in (r["TalimTuri"],
+                                       f'{int(r["Semestr"])}-sem' if r["Semestr"] else "") if x)
+        return (f'{name} — {c["TurSoat"]}: qoldi {c["left"]} {word} × {g(c["unit"])} soat '
+                f'= {g(c["remaining"])} soat · {extra}')
+
+    def _current(self):
+        i = self.cb_comp.current()
+        return self.comps[i] if 0 <= i < len(self.comps) else None
+
+    def _on_comp(self):
+        c = self._current()
+        if not c:
+            return
+        word = "potok" if c["TurSoat"] == "Maruza" else "guruh"
+        self.lbl_info.config(text=f"1 {word} = {g(c['unit'])} soat (bo'linmaydi) · "
+                                  f"tarqatish uchun: {c['left']} {word}")
+        for _, _, var, sp in self.spin_vars:
+            var.set("0")
+            sp.config(from_=0, to=c["left"])
+        self._update_counter()
+
+    def _counts(self):
+        out = []
+        for dom_id, fio, var, _ in self.spin_vars:
+            try:
+                n = int(float(var.get().strip() or 0))
+            except ValueError:
+                n = 0
+            if n > 0:
+                out.append((dom_id, fio, n))
+        return out
+
+    def _update_counter(self):
+        c = self._current()
+        if not c:
+            return
+        word = "potok" if c["TurSoat"] == "Maruza" else "guruh"
+        total = sum(n for _, _, n in self._counts())
+        left = c["left"] - total
+        color = UI["danger_dark"] if left < 0 else UI["brand_dark"]
+        self.lbl_count.config(foreground=color,
+                              text=f"Tanlandi: {total} {word} ({g(total * c['unit'])} soat) · "
+                                   f"qoladi: {left} {word}")
+
+    def _save(self):
+        c = self._current()
+        if not c:
+            messagebox.showerror("Xato", "Fan komponenti tanlanmagan.", parent=self)
+            return
+        counts = self._counts()
+        if not counts:
+            messagebox.showerror("Xato", "Hech kimga potok/guruh belgilanmadi.", parent=self)
+            return
+        total = sum(n for _, _, n in counts)
+        word = "potok" if c["TurSoat"] == "Maruza" else "guruh"
+        if total > c["left"]:
+            messagebox.showerror("Xato",
+                f"Jami {total} {word} belgilandi, lekin faqat {c['left']} {word} qolgan.\\n"
+                f"Ortiqcha biriktirish mumkin emas.", parent=self)
+            return
+        if not messagebox.askyesno("Tasdiqlang",
+                f"{len(counts)} ta professorga jami {total} {word} "
+                f"({g(total * c['unit'])} soat) biriktirilsinmi?", parent=self):
+            return
+        # over-norm notification (non-blocking, combined)
+        overs = []
+        for dom_id, fio, n in counts:
+            d = self.con.execute("SELECT Stavka, Meyor1St FROM Domlalar WHERE DomlaID=?",
+                                 (dom_id,)).fetchone()
+            norm = meyor_jami(d["Meyor1St"], d["Stavka"])
+            new_total = self.assigned_by_dom.get(dom_id, 0) + n * c["unit"]
+            if norm and new_total > norm + 1e-9:
+                overs.append(f"• {short_name(fio)}: {g(new_total)}/{g(norm)} soat "
+                             f"({new_total / norm * 100:.0f}%)")
+        if overs:
+            messagebox.showwarning("Meyordan ortiq",
+                "Quyidagi o'qituvchilar meyoridan oshadi (yozuvlar baribir saqlanadi):\\n"
+                + "\\n".join(overs), parent=self)
+        self.result = [(dom_id, c["FanID"], c["TurSoat"], n * c["unit"])
+                       for dom_id, fio, n in counts]
+        self.destroy()
+
+
 # ===================== Main application =====================
 class App(tk.Tk):
     def __init__(self):
@@ -788,18 +1145,24 @@ class App(tk.Tk):
         right.pack(side="right")
         hbtns = ttk.Frame(right, style="Header.TFrame")
         hbtns.pack(anchor="e")
-        ttk.Button(hbtns, text="↩ Ortga qaytarish (Ctrl+Z)", style="Ghost.TButton",
-                   command=self.show_undo).pack(side="left")
+        ttk.Button(hbtns, text="⬇ To'liq hisobot", style="Ghost.TButton",
+                   command=self.export_full_xlsx).pack(side="left")
+        ttk.Button(hbtns, text="Zaxira va arxiv", style="Ghost.TButton",
+                   command=self.show_data_dialog).pack(side="left", padx=(8, 0))
+        ttk.Button(hbtns, text="↩ Qaytarish (Ctrl+Z)", style="Ghost.TButton",
+                   command=self.show_undo).pack(side="left", padx=(8, 0))
         ttk.Button(hbtns, text="Yordam markazi", style="Ghost.TButton",
                    command=self.show_help).pack(side="left", padx=(8, 0))
         ttk.Label(right, text="Developed by Zaxid Raximov",
                   style="Dev.TLabel").pack(anchor="e", pady=(6, 0))
         tk.Frame(self, height=1, background=UI["border"]).pack(fill="x")
 
-        self.undo_stack = []          # deleted-rows history (session only)
+        self.undo_stack = []          # deleted/edited-rows history (session only)
         self.bind("<Control-z>", self.undo_last)
         self.bind("<Control-Z>", self.undo_last)
+        self._auto_backup()           # safety copy of the database on every start
 
+        self._search_entries = {}
         self.nb = ttk.Notebook(self)
         self.nb.pack(fill="both", expand=True, padx=10, pady=(0, 8))
         self._build_domlalar()
@@ -808,6 +1171,14 @@ class App(tk.Tk):
         self._build_yukfan()
         self._build_yuklama()
         self.nb.bind("<<NotebookTabChanged>>", lambda e: self._on_tab())
+
+        # keyboard shortcuts: Del=o'chirish, Ctrl+N=qo'shish, Ctrl+F=qidiruv, F5=yangilash
+        self.bind("<Delete>", self._hk_delete)
+        self.bind("<Control-n>", self._hk_add)
+        self.bind("<Control-N>", self._hk_add)
+        self.bind("<Control-f>", self._hk_find)
+        self.bind("<Control-F>", self._hk_find)
+        self.bind("<F5>", lambda e: self.refresh_all())
 
         status = ttk.Frame(self, style="Status.TFrame", padding=(14, 6))
         status.pack(fill="x", side="bottom")
@@ -903,18 +1274,217 @@ class App(tk.Tk):
                          arrowcolor=u["muted"], relief="flat")
             st.map(s, background=[("active", "#B4BFD0")])
 
+    # ---------- backup & academic-year archive ----------
+    BACKUP_KEEP = 15
+
+    @staticmethod
+    def _data_dir(sub):
+        d = os.path.join(os.path.dirname(db_path()), sub)
+        os.makedirs(d, exist_ok=True)
+        return d
+
+    def _auto_backup(self):
+        """Copy the database into backups/ on every start; keep the newest 15."""
+        try:
+            if not os.path.exists(db_path()) or os.path.getsize(db_path()) == 0:
+                return
+            dest = os.path.join(self._data_dir("backups"),
+                                time.strftime("dars_taqsimoti_%Y-%m-%d_%H%M%S.db"))
+            if not os.path.exists(dest):
+                shutil.copy2(db_path(), dest)
+            files = sorted(os.listdir(self._data_dir("backups")), reverse=True)
+            for f in files[self.BACKUP_KEEP:]:
+                os.remove(os.path.join(self._data_dir("backups"), f))
+        except OSError:
+            pass                                   # backup must never block the app
+
+    def _reopen_db(self):
+        self.con.close()
+        self.con = connect()
+        self.undo_stack.clear()
+        self.refresh_all()
+
+    def _db_files(self, sub):
+        d = self._data_dir(sub)
+        out = []
+        for f in sorted(os.listdir(d), reverse=True):
+            if f.endswith(".db"):
+                p = os.path.join(d, f)
+                out.append((f, time.strftime("%d.%m.%Y %H:%M", time.localtime(os.path.getmtime(p))),
+                            f"{os.path.getsize(p) / 1024:.0f} KB", p))
+        return out
+
+    def show_data_dialog(self):
+        """Zaxira (auto-backups) + O'quv yili arxivi dialog."""
+        win = tk.Toplevel(self)
+        win.title("Zaxira va arxiv")
+        win.geometry("700x460")
+        win.transient(self)
+        win.configure(background=UI["bg"])
+        try:
+            win.geometry(f"+{self.winfo_rootx() + 100}+{self.winfo_rooty() + 70}")
+        except Exception:
+            pass
+        nb = ttk.Notebook(win)
+        nb.pack(fill="both", expand=True, padx=10, pady=10)
+
+        # --- Tab 1: automatic backups ---
+        f1 = ttk.Frame(nb, padding=12)
+        nb.add(f1, text="  Zaxira nusxalari  ")
+        ttk.Label(f1, text="Dastur har ochilganda avtomatik zaxira olinadi (oxirgi "
+                           f"{self.BACKUP_KEEP} tasi saqlanadi). Papka: backups/",
+                  style="Muted.TLabel").pack(anchor="w", pady=(0, 8))
+        t1 = self._make_tree(f1, ["Fayl", "Sana", "Hajmi"], [330, 130, 80],
+                             {"Sana": "center", "Hajmi": "e"}, stretch=("Fayl",))
+
+        def load1():
+            t1.delete(*t1.get_children())
+            for i, (f, dt, sz, p) in enumerate(self._db_files("backups")):
+                t1.insert("", "end", iid=p, values=(f, dt, sz), tags=("odd",) if i % 2 else ())
+        load1()
+
+        def backup_now():
+            try:
+                dest = os.path.join(self._data_dir("backups"),
+                                    time.strftime("dars_taqsimoti_%Y-%m-%d_%H%M%S.db"))
+                shutil.copy2(db_path(), dest)
+                load1()
+                messagebox.showinfo("Tayyor", "Zaxira nusxa olindi.", parent=win)
+            except OSError as e:
+                messagebox.showerror("Xato", str(e), parent=win)
+
+        def restore_backup():
+            sel = t1.selection()
+            if not sel:
+                messagebox.showinfo("Zaxira", "Avval zaxira faylini tanlang.", parent=win)
+                return
+            if not messagebox.askyesno("Tasdiqlang",
+                    "Tanlangan zaxiradan tiklansinmi?\n\nJoriy ma'lumot avval avtomatik "
+                    "zaxiralanadi, so'ng tanlangan nusxa bilan almashtiriladi.", parent=win):
+                return
+            try:
+                backup_now_path = os.path.join(self._data_dir("backups"),
+                                               time.strftime("dars_taqsimoti_%Y-%m-%d_%H%M%S_oldingi.db"))
+                shutil.copy2(db_path(), backup_now_path)
+                self.con.close()
+                shutil.copy2(sel[0], db_path())
+                self.con = connect()
+                self.undo_stack.clear()
+                self.refresh_all()
+                load1()
+                messagebox.showinfo("Tayyor", "Zaxiradan muvaffaqiyatli tiklandi.", parent=win)
+            except OSError as e:
+                self.con = connect()
+                messagebox.showerror("Xato", str(e), parent=win)
+
+        b1 = ttk.Frame(f1)
+        b1.pack(fill="x", pady=(10, 0))
+        ttk.Button(b1, text="Hozir zaxiralash", style="Secondary.TButton",
+                   command=backup_now).pack(side="left")
+        ttk.Button(b1, text="Tanlanganidan tiklash", style="Primary.TButton",
+                   command=restore_backup).pack(side="right")
+
+        # --- Tab 2: academic-year archive ---
+        f2 = ttk.Frame(nb, padding=12)
+        nb.add(f2, text="  O'quv yili arxivi  ")
+        ttk.Label(f2, text="Yangi o'quv yili boshlanganda joriy ma'lumotni arxivlab, toza baza "
+                           "bilan davom eting. Arxivlar: arxiv/ papkasida.",
+                  style="Muted.TLabel").pack(anchor="w", pady=(0, 8))
+        row = ttk.Frame(f2)
+        row.pack(fill="x", pady=(0, 8))
+        ttk.Label(row, text="Arxiv nomi:").pack(side="left")
+        yr = time.localtime().tm_year
+        var_name = tk.StringVar(value=f"{yr}-{yr + 1}")
+        ttk.Entry(row, textvariable=var_name, width=18).pack(side="left", padx=8)
+
+        t2 = self._make_tree(f2, ["Arxiv", "Sana", "Hajmi"], [330, 130, 80],
+                             {"Sana": "center", "Hajmi": "e"}, stretch=("Arxiv",))
+
+        def load2():
+            t2.delete(*t2.get_children())
+            for i, (f, dt, sz, p) in enumerate(self._db_files("arxiv")):
+                t2.insert("", "end", iid=p, values=(f, dt, sz), tags=("odd",) if i % 2 else ())
+        load2()
+
+        def archive_year():
+            name = var_name.get().strip() or f"{yr}-{yr + 1}"
+            dest = os.path.join(self._data_dir("arxiv"), f"dars_taqsimoti_{name}.db")
+            if os.path.exists(dest) and not messagebox.askyesno(
+                    "Diqqat", f"«{name}» arxivi mavjud. Ustidan yozilsinmi?", parent=win):
+                return
+            if not messagebox.askyesno("Tasdiqlang",
+                    f"Joriy ma'lumot «{name}» nomi bilan arxivlanadi, so'ng yangi (toza) "
+                    "o'quv yili boshlanadi.\n\nDavom etilsinmi?", parent=win):
+                return
+            keep = messagebox.askyesno("O'qituvchilar",
+                    "Professor-o'qituvchilar ro'yxati YANGI yilda saqlanib qolsinmi?\n\n"
+                    "«Ha» — o'qituvchilar qoladi, fanlar va taqsimot tozalanadi.\n"
+                    "«Yo'q» — hamma narsa tozalanadi.", parent=win)
+            try:
+                shutil.copy2(db_path(), dest)
+                self.con.execute("DELETE FROM Taqsimot")
+                self.con.execute("DELETE FROM Fanlar")
+                if not keep:
+                    self.con.execute("DELETE FROM Domlalar")
+                self.con.commit()
+                self.undo_stack.clear()
+                self.refresh_all()
+                load2()
+                messagebox.showinfo("Tayyor", f"«{name}» arxivlandi. Yangi o'quv yili boshlandi.",
+                                    parent=win)
+            except (OSError, sqlite3.Error) as e:
+                messagebox.showerror("Xato", str(e), parent=win)
+
+        def open_archive():
+            sel = t2.selection()
+            if not sel:
+                messagebox.showinfo("Arxiv", "Avval arxivni tanlang.", parent=win)
+                return
+            if not messagebox.askyesno("Tasdiqlang",
+                    "Tanlangan arxivga o'tilsinmi?\n\nJoriy ma'lumot avval avtomatik "
+                    "zaxiralanadi (backups/), so'ng arxiv ochiladi.", parent=win):
+                return
+            try:
+                shutil.copy2(db_path(), os.path.join(self._data_dir("backups"),
+                             time.strftime("dars_taqsimoti_%Y-%m-%d_%H%M%S_arxivdan_oldin.db")))
+                self.con.close()
+                shutil.copy2(sel[0], db_path())
+                self.con = connect()
+                self.undo_stack.clear()
+                self.refresh_all()
+                messagebox.showinfo("Tayyor", "Arxiv ochildi.", parent=win)
+            except OSError as e:
+                self.con = connect()
+                messagebox.showerror("Xato", str(e), parent=win)
+
+        b2 = ttk.Frame(f2)
+        b2.pack(fill="x", pady=(10, 0))
+        ttk.Button(b2, text="Joriy yilni arxivlash va yangi boshlash", style="Primary.TButton",
+                   command=archive_year).pack(side="left")
+        ttk.Button(b2, text="Tanlangan arxivga o'tish", style="Secondary.TButton",
+                   command=open_archive).pack(side="right")
+
+        win.bind("<Escape>", lambda e: win.destroy())
+        win.grab_set()
+
     # ---------- undo (ortga qaytarish) ----------
     _RESTORE_ORDER = {"Domlalar": 0, "Fanlar": 1, "Taqsimot": 2}
+    _PK = {"Domlalar": "DomlaID", "Fanlar": "FanID", "Taqsimot": "TaqsimotID"}
 
-    def _record_delete(self, desc, items):
-        """Save one delete operation to the undo stack.
-        items: list of (table_name, row_dict) captured BEFORE deletion.
-        One bulk delete (e.g. 50 rows at once) = one operation."""
+    def _record_op(self, kind, desc, items):
+        """Save one operation to the undo stack.
+        kind: 'delete' (items = rows captured before deletion, restored via INSERT)
+              'update' (items = rows captured before editing, restored via UPDATE).
+        One bulk action (e.g. 50 rows deleted at once) = one operation."""
         if not items:
             return
-        self.undo_stack.append({"time": time.strftime("%H:%M:%S"), "desc": desc, "items": items})
+        self.undo_stack.append({"time": time.strftime("%H:%M:%S"), "kind": kind,
+                                "desc": desc, "items": items})
         if len(self.undo_stack) > 100:
             self.undo_stack.pop(0)
+
+    def _record_delete(self, desc, items):
+        self._record_op("delete", desc, items)
 
     @staticmethod
     def _snap(con, table, id_col, ids):
@@ -926,16 +1496,26 @@ class App(tk.Tk):
                 con.execute(f"SELECT * FROM {table} WHERE {id_col} IN ({qm})", list(ids))]
 
     def _restore_op(self, op):
-        """Re-insert deleted rows with their original IDs. Parents (Domlalar, Fanlar)
-        are restored before Taqsimot so foreign keys stay valid."""
+        """Bring back the pre-operation state. Deleted rows are re-inserted with
+        their original IDs (parents before Taqsimot, so foreign keys stay valid);
+        edited rows are updated back to their old values."""
         ok = fail = 0
         for table, row in sorted(op["items"], key=lambda x: self._RESTORE_ORDER.get(x[0], 9)):
             cols = list(row.keys())
             try:
-                self.con.execute(
-                    f"INSERT INTO {table}({','.join(cols)}) VALUES({','.join('?' * len(cols))})",
-                    [row[c] for c in cols])
-                ok += 1
+                if op.get("kind") == "update":
+                    pk = self._PK[table]
+                    sets = ",".join(f"{c}=?" for c in cols if c != pk)
+                    cur = self.con.execute(
+                        f"UPDATE {table} SET {sets} WHERE {pk}=?",
+                        [row[c] for c in cols if c != pk] + [row[pk]])
+                    ok += 1 if cur.rowcount else 0
+                    fail += 0 if cur.rowcount else 1
+                else:
+                    self.con.execute(
+                        f"INSERT INTO {table}({','.join(cols)}) VALUES({','.join('?' * len(cols))})",
+                        [row[c] for c in cols])
+                    ok += 1
             except sqlite3.IntegrityError:
                 fail += 1      # e.g. parent row deleted in another operation and not yet restored
         self.con.commit()
@@ -1011,6 +1591,27 @@ class App(tk.Tk):
         win.bind("<Escape>", lambda e: win.destroy())
         win.grab_set()
 
+    # ---------- keyboard shortcuts ----------
+    @staticmethod
+    def _typing(widget):
+        return isinstance(widget, (tk.Entry, ttk.Entry, ttk.Combobox, ttk.Spinbox, tk.Text))
+
+    def _hk_delete(self, event=None):
+        if self._typing(self.focus_get()):
+            return
+        idx = self.nb.index(self.nb.select())
+        {0: self.dom_del, 1: self.fan_del, 2: self.taq_del}.get(idx, lambda: None)()
+
+    def _hk_add(self, event=None):
+        idx = self.nb.index(self.nb.select())
+        {0: self.dom_add, 1: self.fan_add, 2: self.taq_add}.get(idx, lambda: None)()
+
+    def _hk_find(self, event=None):
+        e = self._search_entries.get(self.nb.index(self.nb.select()))
+        if e:
+            e.focus_set()
+            e.select_range(0, "end")
+
     # ---------- generic helpers ----------
     def _make_tab(self, title):
         f = ttk.Frame(self.nb, padding=(14, 14))
@@ -1025,6 +1626,9 @@ class App(tk.Tk):
         ttk.Label(bar, text="Qidirish:", style="Muted.TLabel").pack(side="left", padx=(16, 6))
         e = ttk.Entry(bar, textvariable=var, width=26)
         e.pack(side="left")
+        if hasattr(self, "nb"):                        # Ctrl+F jumps here for the active tab
+            self._search_entries[len(self.nb.tabs()) - 1] = e
+        return e
 
     def _make_tree(self, parent, columns, widths, anchors=None, stretch=None):
         wrap = tk.Frame(parent, background=UI["surface"], highlightthickness=1,
@@ -1146,14 +1750,20 @@ class App(tk.Tk):
             messagebox.showerror("Xato", str(e))
 
     def _csv_import(self, table, expected, insert_sql, row_to_tuple, preprocess=None):
-        path = filedialog.askopenfilename(filetypes=[("CSV", "*.csv"), ("Hamma fayllar", "*.*")])
+        path = filedialog.askopenfilename(
+            filetypes=[("Excel yoki CSV", "*.xlsx *.csv"), ("Excel", "*.xlsx"),
+                       ("CSV", "*.csv"), ("Hamma fayllar", "*.*")])
         if not path:
             return
         try:
-            with open(path, newline="", encoding="utf-8-sig") as fh:
-                raw_rows = [{k.strip(): v for k, v in r.items()} for r in csv.DictReader(fh)]
-        except (OSError, csv.Error) as e:
-            messagebox.showerror("Xato", f"CSV o'qishda xato:\n{e}")
+            if path.lower().endswith(".xlsx"):
+                raw_rows = [{k.strip(): ("" if v is None else str(v)) for k, v in r.items()}
+                            for r in read_xlsx_rows(path)]
+            else:
+                with open(path, newline="", encoding="utf-8-sig") as fh:
+                    raw_rows = [{k.strip(): v for k, v in r.items()} for r in csv.DictReader(fh)]
+        except (OSError, csv.Error, KeyError, ValueError) as e:
+            messagebox.showerror("Xato", f"Faylni o'qishda xato:\n{e}")
             return
         note = ""
         if preprocess:
@@ -1181,7 +1791,7 @@ class App(tk.Tk):
         ttk.Button(bar, text="+ Qo'shish", style="Primary.TButton", command=self.dom_add).pack(side="left")
         ttk.Button(bar, text="Tahrirlash", style="Secondary.TButton", command=self.dom_edit).pack(side="left", padx=6)
         ttk.Button(bar, text="O'chirish", style="Danger.TButton", command=self.dom_del).pack(side="left")
-        ttk.Button(bar, text="CSV import", style="Secondary.TButton", command=self.dom_import).pack(side="left", padx=(16, 0))
+        ttk.Button(bar, text="Import (Excel/CSV)", style="Secondary.TButton", command=self.dom_import).pack(side="left", padx=(16, 0))
         ttk.Button(bar, text="Shablon", style="Secondary.TButton", command=self.dom_template).pack(side="left", padx=6)
         self.dom_total = tk.StringVar(value="Jami meyor: 0")
         ttk.Label(bar, textvariable=self.dom_total, style="Chip.TLabel").pack(side="right", padx=(8, 2))
@@ -1240,6 +1850,8 @@ class App(tk.Tk):
         d = FormDialog(self, "Professor-o'qituvchini tahrirlash", self._dom_spec(), dict(r),
                        computed=self._dom_preview).result
         if d:
+            self._record_op("update", f"Tahrir: professor-o'qituvchi «{short_name(r['FIO'])}»",
+                            [("Domlalar", dict(r))])
             self.con.execute("UPDATE Domlalar SET FIO=?,IlmiyUnvon=?,Kategoriya=?,Stavka=?,Meyor1St=? WHERE DomlaID=?",
                              (d["FIO"], d["IlmiyUnvon"], int(d["Kategoriya"] or 0), d["Stavka"], d["Meyor1St"], i))
             self.con.commit()
@@ -1293,7 +1905,7 @@ class App(tk.Tk):
         ttk.Button(bar, text="+ Qo'shish", style="Primary.TButton", command=self.fan_add).pack(side="left")
         ttk.Button(bar, text="Tahrirlash", style="Secondary.TButton", command=self.fan_edit).pack(side="left", padx=6)
         ttk.Button(bar, text="O'chirish", style="Danger.TButton", command=self.fan_del).pack(side="left")
-        ttk.Button(bar, text="CSV import", style="Secondary.TButton", command=self.fan_import).pack(side="left", padx=(16, 0))
+        ttk.Button(bar, text="Import (Excel/CSV)", style="Secondary.TButton", command=self.fan_import).pack(side="left", padx=(16, 0))
         ttk.Button(bar, text="Shablon", style="Secondary.TButton", command=self.fan_template).pack(side="left", padx=6)
         ttk.Button(bar, text="Takror tozalash", style="Secondary.TButton", command=self.fan_dedup).pack(side="left")
         self.fan_total = tk.StringVar(value="Jami soatlar: 0")
@@ -1382,6 +1994,7 @@ class App(tk.Tk):
         d = FormDialog(self, "Fanni tahrirlash", self._fan_spec(), dict(r),
                        computed=self._fan_preview, rules=fan_rules).result
         if d:
+            self._record_op("update", f"Tahrir: fan «{r['FanNomi']}»", [("Fanlar", dict(r))])
             self.con.execute("UPDATE Fanlar SET FanNomi=?,Yonalish=?,TalimTuri=?,Kategoriya=?,Semestr=?,"
                              "Maruza=?,Amaliyot=?,Potok=?,Guruh=?,Reyting=?,Til=? WHERE FanID=?",
                              (d["FanNomi"], d["Yonalish"], d["TalimTuri"], int(d["Kategoriya"] or 0),
@@ -1507,8 +2120,9 @@ class App(tk.Tk):
     def _build_taqsimot(self):
         _, bar, body = self._make_tab("  Taqsimot  ")
         ttk.Button(bar, text="+ Qo'shish", style="Primary.TButton", command=self.taq_add).pack(side="left")
-        ttk.Button(bar, text="Tahrirlash", style="Secondary.TButton", command=self.taq_edit).pack(side="left", padx=6)
-        ttk.Button(bar, text="O'chirish", style="Danger.TButton", command=self.taq_del).pack(side="left")
+        ttk.Button(bar, text="Tezkor taqsimlash", style="Secondary.TButton", command=self.taq_bulk).pack(side="left", padx=6)
+        ttk.Button(bar, text="Tahrirlash", style="Secondary.TButton", command=self.taq_edit).pack(side="left")
+        ttk.Button(bar, text="O'chirish", style="Danger.TButton", command=self.taq_del).pack(side="left", padx=6)
         ttk.Button(bar, text="Excel ga eksport", style="Secondary.TButton", command=self.taq_export_xlsx).pack(side="left", padx=(16, 0))
         ttk.Button(bar, text="CSV ga eksport", style="Secondary.TButton", command=self.taq_export).pack(side="left", padx=6)
         self.taq_q = tk.StringVar()
@@ -1557,6 +2171,18 @@ class App(tk.Tk):
             self.con.commit()
             self.refresh_all()
 
+    def taq_bulk(self):
+        """Quick distribution: split all remaining potok/guruh units of one course
+        among several professors in a single window."""
+        if not self._has_base_data():
+            return
+        res = BulkTaqsimotDialog(self, self.con).result
+        if res:
+            self.con.executemany("INSERT INTO Taqsimot(DomlaID,FanID,TurSoat,Soat) VALUES(?,?,?,?)", res)
+            self.con.commit()
+            self.refresh_all()
+            messagebox.showinfo("Tayyor", f"{len(res)} ta taqsimot yozuvi qo'shildi.")
+
     def taq_edit(self):
         i = self._selected_id(self.t_taq)
         if i is None:
@@ -1564,6 +2190,8 @@ class App(tk.Tk):
         r = self.con.execute("SELECT * FROM Taqsimot WHERE TaqsimotID=?", (i,)).fetchone()
         d = TaqsimotDialog(self, self.con, dict(r), editing_id=r["TaqsimotID"]).result
         if d:
+            self._record_op("update", f"Tahrir: taqsimot yozuvi №{r['TaqsimotID']}",
+                            [("Taqsimot", dict(r))])
             self.con.execute("UPDATE Taqsimot SET DomlaID=?,FanID=?,TurSoat=?,Soat=? WHERE TaqsimotID=?",
                              (d["DomlaID"], d["FanID"], d["TurSoat"], d["Soat"], i))
             self.con.commit()
@@ -1582,30 +2210,60 @@ class App(tk.Tk):
             self.con.commit()
             self.refresh_all()
 
-    def taq_export_xlsx(self):
-        """Professional Excel of all assignments with AutoFilter on every column."""
-        path = filedialog.asksaveasfilename(defaultextension=".xlsx",
-                                            filetypes=[("Excel", "*.xlsx")], initialfile="taqsimot.xlsx")
-        if not path:
-            return
+    def _taq_data(self):
         sql = """SELECT t.TaqsimotID, d.FIO, f.FanNomi, f.Til, f.Yonalish, f.TalimTuri, f.Semestr,
                         t.TurSoat, t.Soat
                  FROM Taqsimot t
                  LEFT JOIN Domlalar d ON d.DomlaID=t.DomlaID
                  LEFT JOIN Fanlar f   ON f.FanID=t.FanID
                  ORDER BY d.FIO COLLATE NOCASE, f.FanNomi COLLATE NOCASE"""
+        return [{"tid": r["TaqsimotID"], "fio": r["FIO"] or "—", "fan": r["FanNomi"] or "—",
+                 "til": r["Til"] or "", "yon": r["Yonalish"] or "", "talim": r["TalimTuri"] or "",
+                 "sem": int(r["Semestr"]) if r["Semestr"] else 0, "turi": r["TurSoat"] or "",
+                 "soat": r["Soat"] or 0} for r in self.con.execute(sql)]
+
+    def _filtered_choice(self, q, data, matcher, unit="qator"):
+        """If a search filter is active, let the user export only the visible rows."""
+        q = (q or "").strip().lower()
+        if not q:
+            return data
+        shown = [d for d in data if matcher(d)]
+        if not shown or len(shown) == len(data):
+            return data
+        if messagebox.askyesno("Filtrlangan eksport",
+                f"Qidiruv filtri faol.\nFaqat ko'rinib turgan {len(shown)} ta {unit} eksport "
+                f"qilinsinmi?\n\n«Yo'q» — barcha {len(data)} ta {unit} eksport qilinadi."):
+            return shown
+        return data
+
+    def _taq_match(self, q, d):
+        fan = f'{d["fan"]} ({d["til"].lower()})' if d["til"] and d["fan"] != "—" else d["fan"]
+        return self._q_match(q, d["tid"], d["fio"], fan, d["yon"], d["talim"],
+                             g(d["sem"]), d["turi"], g(d["soat"]))
+
+    def _taq_sheet(self, data):
         headers = ["№", "Professor-o'qituvchi\n(F.I.Sh.)", "Fan nomi", "Til", "Yo'nalish",
                    "Ta'lim\nturi", "Sem.", "Yuklama\nturi", "Soat"]
-        widths = [5, 32, 34, 9, 17, 11, 6, 11, 8]
-        rows = []
-        for n, r in enumerate(self.con.execute(sql), 1):
-            rows.append([n, r["FIO"] or "—", r["FanNomi"] or "—", r["Til"] or "",
-                         r["Yonalish"] or "", r["TalimTuri"] or "",
-                         int(r["Semestr"]) if r["Semestr"] else 0, r["TurSoat"] or "", r["Soat"] or 0])
+        widths = [5, 32, 34, 9, 17, 11, 6, 11, 9]
+        rows = [[n, d["fio"], d["fan"], d["til"], d["yon"], d["talim"], d["sem"], d["turi"], d["soat"]]
+                for n, d in enumerate(data, 1)]
+        rows.append(["", "JAMI", "", "", "", "", "", "", sum(d["soat"] for d in data)])
+        return {"name": "Taqsimot",
+                "title": f"Dars taqsimoti  ·  {time.strftime('%d.%m.%Y')}",
+                "headers": headers, "widths": widths, "rows": rows,
+                "text_cols": {1, 2, 3, 4, 5, 7}, "total_rows": {len(rows) - 1}}
+
+    def taq_export_xlsx(self):
+        """Professional Excel of assignments: AutoFilter, frozen header, JAMI row.
+        Honors the active search filter (asks first)."""
+        data = self._filtered_choice(self.taq_q.get(), self._taq_data(),
+                                     lambda d: self._taq_match(self.taq_q.get().strip().lower(), d))
+        path = filedialog.asksaveasfilename(defaultextension=".xlsx",
+                                            filetypes=[("Excel", "*.xlsx")], initialfile="taqsimot.xlsx")
+        if not path:
+            return
         try:
-            write_pro_xlsx(path, "Taqsimot",
-                           f"Dars taqsimoti  ·  {time.strftime('%d.%m.%Y')}",
-                           headers, widths, rows, text_cols={1, 2, 3, 4, 5, 7})
+            write_pro_xlsx_multi(path, [self._taq_sheet(data)])
             messagebox.showinfo("Tayyor", f"Excel fayl saqlandi:\n{path}\n\n"
                                 "Sarlavhadagi tugmalar orqali istalgan ustun bo'yicha "
                                 "saralash va filtrlash mumkin.")
@@ -1613,22 +2271,19 @@ class App(tk.Tk):
             messagebox.showerror("Xato", str(e))
 
     def taq_export(self):
+        data = self._filtered_choice(self.taq_q.get(), self._taq_data(),
+                                     lambda d: self._taq_match(self.taq_q.get().strip().lower(), d))
         path = filedialog.asksaveasfilename(defaultextension=".csv",
                                             filetypes=[("CSV", "*.csv")], initialfile="taqsimot.csv")
         if not path:
             return
-        sql = """SELECT d.FIO, f.FanNomi, f.Til, f.Yonalish, f.TalimTuri, f.Semestr, t.TurSoat, t.Soat
-                 FROM Taqsimot t
-                 LEFT JOIN Domlalar d ON d.DomlaID=t.DomlaID
-                 LEFT JOIN Fanlar f   ON f.FanID=t.FanID
-                 ORDER BY d.FIO COLLATE NOCASE, f.FanNomi COLLATE NOCASE"""
         try:
             with open(path, "w", newline="", encoding="utf-8-sig") as fh:
                 w = csv.writer(fh)
                 w.writerow(["Professor-o'qituvchi", "Fan", "Til", "Yonalish", "TalimTuri", "Semestr", "Turi", "Soat"])
-                for r in self.con.execute(sql):
-                    w.writerow([r["FIO"] or "", r["FanNomi"] or "", r["Til"] or "", r["Yonalish"] or "",
-                                r["TalimTuri"] or "", g(r["Semestr"]), r["TurSoat"], g(r["Soat"])])
+                for d in data:
+                    w.writerow([d["fio"], d["fan"], d["til"], d["yon"], d["talim"],
+                                g(d["sem"]), d["turi"], g(d["soat"])])
             messagebox.showinfo("Tayyor", f"Taqsimot saqlandi:\n{path}")
         except OSError as e:
             messagebox.showerror("Xato", str(e))
@@ -1721,31 +2376,72 @@ class App(tk.Tk):
         except OSError as e:
             messagebox.showerror("Xato", str(e))
 
-    def yukfan_export_xlsx(self):
-        """Professional Excel report for courses: title, colored header with
-        AutoFilter (sort/filter dropdowns), frozen header, zebra grid, real % cells."""
-        path = filedialog.asksaveasfilename(defaultextension=".xlsx",
-                                            filetypes=[("Excel", "*.xlsx")],
-                                            initialfile="yuklama_fanlar_hisobot.xlsx")
-        if not path:
-            return
+    def _yukfan_match(self, q, d):
+        return self._q_match(q, d["id"], d["nomi"], d["yon"], d["talim"],
+                             d["til"], g(d["sem"]), d["oqit"])
+
+    def _yukfan_sheet(self, ds):
         headers = ["ID", "Fan nomi", "Yo'nalish", "Ta'lim\nturi", "Til", "Sem.",
                    "Ma'ruza\n(jami)", "Ma'ruza\nberilgan", "Amaliyot\n(jami)", "Amaliyot\nberilgan",
                    "Reyting\n(jami)", "Reyting\nberilgan", "Jami", "Berilgan", "Qoldiq",
                    "Bajarilish\n%", "O'qituvchilar"]
         widths = [6, 28, 17, 11, 9, 6, 9, 9, 10, 9, 9, 9, 8, 9, 8, 10, 36]
-        rows = []
-        for d in sorted(self._fan_report_rows(), key=lambda x: x["pct"], reverse=True):
-            rows.append([d["id"], d["nomi"] or "", d["yon"] or "", d["talim"] or "", d["til"] or "",
-                         d["sem"] or 0, d["mj"], d["mb"], d["aj"], d["ab"], d["rj"], d["rb"],
-                         d["jami"], d["berilgan"], d["qoldiq"], d["pct"] / 100, d["oqit"]])
+        rows = [[d["id"], d["nomi"] or "", d["yon"] or "", d["talim"] or "", d["til"] or "",
+                 d["sem"] or 0, d["mj"], d["mb"], d["aj"], d["ab"], d["rj"], d["rb"],
+                 d["jami"], d["berilgan"], d["qoldiq"], d["pct"] / 100, d["oqit"]] for d in ds]
+        tj = sum(d["jami"] for d in ds)
+        tb = sum(d["berilgan"] for d in ds)
+        rows.append(["", "JAMI", "", "", "", "",
+                     sum(d["mj"] for d in ds), sum(d["mb"] for d in ds),
+                     sum(d["aj"] for d in ds), sum(d["ab"] for d in ds),
+                     sum(d["rj"] for d in ds), sum(d["rb"] for d in ds),
+                     tj, tb, tj - tb, (tb / tj) if tj else 0, ""])
+        return {"name": "Yuklama - fanlar",
+                "title": f"Yuklama hisoboti — fanlar  ·  {time.strftime('%d.%m.%Y')}",
+                "headers": headers, "widths": widths, "rows": rows,
+                "text_cols": {1, 2, 3, 4, 16}, "pct_cols": {15}, "total_rows": {len(rows) - 1}}
+
+    def _yukfan_data(self):
+        ds = sorted(self._fan_report_rows(), key=lambda x: x["pct"], reverse=True)
+        return self._filtered_choice(self.yukfan_q.get(), ds,
+                                     lambda d: self._yukfan_match(self.yukfan_q.get().strip().lower(), d),
+                                     unit="fan")
+
+    def yukfan_export_xlsx(self):
+        """Professional Excel report for courses: AutoFilter, frozen header,
+        zebra grid, real % cells, JAMI row. Honors the active search filter."""
+        ds = self._yukfan_data()
+        path = filedialog.asksaveasfilename(defaultextension=".xlsx",
+                                            filetypes=[("Excel", "*.xlsx")],
+                                            initialfile="yuklama_fanlar_hisobot.xlsx")
+        if not path:
+            return
         try:
-            write_pro_xlsx(path, "Yuklama - fanlar",
-                           f"Yuklama hisoboti — fanlar  ·  {time.strftime('%d.%m.%Y')}",
-                           headers, widths, rows, text_cols={1, 2, 3, 4, 16}, pct_cols={15})
+            write_pro_xlsx_multi(path, [self._yukfan_sheet(ds)])
             messagebox.showinfo("Tayyor", f"Excel hisobot saqlandi:\n{path}\n\n"
                                 "Sarlavhadagi tugmalar orqali istalgan ustun bo'yicha "
                                 "saralash va filtrlash mumkin.")
+        except OSError as e:
+            messagebox.showerror("Xato", str(e))
+
+    def yukfan_export(self):
+        ds = self._yukfan_data()
+        path = filedialog.asksaveasfilename(defaultextension=".csv",
+                                            filetypes=[("CSV", "*.csv")], initialfile="yuklama_fanlar_hisobot.csv")
+        if not path:
+            return
+        try:
+            with open(path, "w", newline="", encoding="utf-8-sig") as fh:
+                w = csv.writer(fh)
+                w.writerow(["FanID", "FanNomi", "Yonalish", "TalimTuri", "Til", "Semestr",
+                            "Maruza_jami", "Maruza_berilgan", "Amaliyot_jami", "Amaliyot_berilgan",
+                            "Reyting_jami", "Reyting_berilgan", "Jami", "Berilgan", "Qoldiq",
+                            "Bajarilish_%", "Oqituvchilar"])
+                for d in ds:
+                    w.writerow([d["id"], d["nomi"], d["yon"], d["talim"], d["til"], g(d["sem"]),
+                                g(d["mj"]), g(d["mb"]), g(d["aj"]), g(d["ab"]), g(d["rj"]), g(d["rb"]),
+                                g(d["jami"]), g(d["berilgan"]), g(d["qoldiq"]), f"{d['pct']:.0f}", d["oqit"]])
+            messagebox.showinfo("Tayyor", f"Hisobot saqlandi:\n{path}")
         except OSError as e:
             messagebox.showerror("Xato", str(e))
 
@@ -1754,7 +2450,8 @@ class App(tk.Tk):
         _, bar, body = self._make_tab("  Yuklama (hisobot - o'qituvchi)  ")
         ttk.Button(bar, text="Yangilash", style="Primary.TButton", command=self.load_yuklama).pack(side="left")
         ttk.Button(bar, text="Excel ga eksport", style="Secondary.TButton", command=self.yuk_export_xlsx).pack(side="left", padx=8)
-        ttk.Button(bar, text="CSV ga eksport", style="Secondary.TButton", command=self.yuk_export).pack(side="left")
+        ttk.Button(bar, text="Shaxsiy varaqa (Excel)", style="Secondary.TButton", command=self.yuk_export_person).pack(side="left")
+        ttk.Button(bar, text="CSV ga eksport", style="Secondary.TButton", command=self.yuk_export).pack(side="left", padx=8)
         self.yuk_q = tk.StringVar()
         self._add_search(bar, self.yuk_q)
         self.yuk_q.trace_add("write", lambda *_: self.load_yuklama())
@@ -1796,37 +2493,123 @@ class App(tk.Tk):
             summary += f"   |   ⚠ Meyordan ortiq: {over} ta"
         self.yuk_summary.set(summary)
 
+    def _yuk_sheet(self, ds):
+        headers = ["ID", "F.I.Sh.", "Stavka", "Meyor\n(jami)", "Ma'ruza", "Amaliyot", "Reyting",
+                   "Jami\nberilgan", "Farq", "Bajarilish\n%", "Izoh"]
+        widths = [6, 32, 8, 10, 10, 10, 9, 10, 8, 11, 28]
+        rows, danger = [], set()
+        for i, d in enumerate(ds):
+            is_over = d["norm"] and d["jami"] > d["norm"] + 1e-9
+            if is_over:
+                danger.add(i)
+            rows.append([d["id"], d["fio"], d["stavka"] or 0, d["norm"], d["maruza"], d["amaliyot"],
+                         d["reyting"], d["jami"], d["diff"],
+                         d["pct"] / 100,
+                         f"Meyordan ortiq (+{g(d['jami'] - d['norm'])} soat)" if is_over else ""])
+        tn = sum(d["norm"] for d in ds)
+        tj = sum(d["jami"] for d in ds)
+        rows.append(["", "JAMI", sum(d["stavka"] or 0 for d in ds), tn,
+                     sum(d["maruza"] for d in ds), sum(d["amaliyot"] for d in ds),
+                     sum(d["reyting"] for d in ds), tj, tj - tn, (tj / tn) if tn else 0, ""])
+        return {"name": "Yuklama - o'qituvchilar",
+                "title": f"Yuklama hisoboti — professor-o'qituvchilar  ·  {time.strftime('%d.%m.%Y')}",
+                "headers": headers, "widths": widths, "rows": rows,
+                "text_cols": {1, 10}, "pct_cols": {9},
+                "danger_rows": danger, "total_rows": {len(rows) - 1}}
+
+    def _yuk_data(self):
+        ds = sorted(workload_rows(self.con), key=lambda x: x["pct"], reverse=True)
+        q = self.yuk_q.get().strip().lower()
+        return self._filtered_choice(self.yuk_q.get(), ds,
+                                     lambda d: self._q_match(q, d["id"], d["fio"],
+                                                             g(d["stavka"]), g(d["norm"])),
+                                     unit="o'qituvchi")
+
     def yuk_export_xlsx(self):
-        """Professional Excel report for teachers: AutoFilter, frozen header,
-        real % cells, over-norm rows highlighted in red."""
+        """Professional Excel report for teachers: AutoFilter, real % cells,
+        over-norm rows in red, JAMI row. Honors the active search filter."""
+        ds = self._yuk_data()
         path = filedialog.asksaveasfilename(defaultextension=".xlsx",
                                             filetypes=[("Excel", "*.xlsx")],
                                             initialfile="yuklama_oqituvchi_hisobot.xlsx")
         if not path:
             return
-        headers = ["ID", "F.I.Sh.", "Stavka", "Meyor\n(jami)", "Ma'ruza", "Amaliyot", "Reyting",
-                   "Jami\nberilgan", "Farq", "Bajarilish\n%", "Izoh"]
-        widths = [6, 32, 8, 10, 10, 10, 9, 10, 8, 11, 28]
-        rows, danger = [], set()
-        for i, d in enumerate(sorted(workload_rows(self.con), key=lambda x: x["pct"], reverse=True)):
-            is_over = d["norm"] and d["jami"] > d["norm"] + 1e-9
-            izoh = f"Meyordan ortiq (+{g(d['jami'] - d['norm'])} soat)" if is_over else ""
-            if is_over:
-                danger.add(i)
-            rows.append([d["id"], d["fio"], d["stavka"] or 0, d["norm"], d["maruza"], d["amaliyot"],
-                         d["reyting"], d["jami"], d["diff"], d["pct"] / 100, izoh])
         try:
-            write_pro_xlsx(path, "Yuklama - o'qituvchilar",
-                           f"Yuklama hisoboti — professor-o'qituvchilar  ·  {time.strftime('%d.%m.%Y')}",
-                           headers, widths, rows, text_cols={1, 10}, pct_cols={9}, danger_rows=danger)
+            write_pro_xlsx_multi(path, [self._yuk_sheet(ds)])
             messagebox.showinfo("Tayyor", f"Excel hisobot saqlandi:\n{path}\n\n"
-                                "Sarlavhadagi tugmalar orqali istalgan ustun bo'yicha "
-                                "saralash va filtrlash mumkin. Meyordan ortiq o'qituvchilar "
-                                "qizil rangda belgilangan.")
+                                "Sarlavhadagi tugmalar orqali saralash/filtrlash mumkin. "
+                                "Meyordan ortiq o'qituvchilar qizil rangda belgilangan.")
+        except OSError as e:
+            messagebox.showerror("Xato", str(e))
+
+    def yuk_export_person(self):
+        """Individual workload sheet for the selected teacher: their courses,
+        totals, completion and signature lines — ready to print and sign."""
+        sel = self.t_yuk.selection()
+        if not sel:
+            messagebox.showinfo("Shaxsiy varaqa",
+                                "Avval jadvaldan professor-o'qituvchini tanlang.")
+            return
+        dom_id = int(self.t_yuk.item(sel[0], "values")[0])
+        d = next((x for x in workload_rows(self.con) if x["id"] == dom_id), None)
+        if not d:
+            return
+        path = filedialog.asksaveasfilename(defaultextension=".xlsx",
+                                            filetypes=[("Excel", "*.xlsx")],
+                                            initialfile=f"yuklama_{short_name(d['fio']).replace(' ', '_')}.xlsx")
+        if not path:
+            return
+        sql = """SELECT f.FanNomi, f.Til, f.Yonalish, f.TalimTuri, f.Semestr, t.TurSoat, t.Soat
+                 FROM Taqsimot t LEFT JOIN Fanlar f ON f.FanID=t.FanID
+                 WHERE t.DomlaID=? ORDER BY f.FanNomi COLLATE NOCASE, t.TurSoat"""
+        rows = []
+        for n, r in enumerate(self.con.execute(sql, (dom_id,)), 1):
+            rows.append([n, r["FanNomi"] or "—", r["Til"] or "", r["Yonalish"] or "",
+                         r["TalimTuri"] or "", int(r["Semestr"]) if r["Semestr"] else 0,
+                         r["TurSoat"] or "", r["Soat"] or 0])
+        rows.append(["", "JAMI", "", "", "", "", "", d["jami"]])
+        sheet = {"name": "Shaxsiy yuklama",
+                 "title": f"Shaxsiy yuklama varaqasi — {d['fio']}  ·  {time.strftime('%d.%m.%Y')}",
+                 "headers": ["№", "Fan nomi", "Til", "Yo'nalish", "Ta'lim\nturi", "Sem.",
+                             "Yuklama\nturi", "Soat"],
+                 "widths": [5, 36, 9, 17, 11, 6, 11, 9],
+                 "rows": rows, "text_cols": {1, 2, 3, 4, 6}, "total_rows": {len(rows) - 1},
+                 "footer_lines": [
+                     f"Stavka: {g(d['stavka'])}    ·    Meyor (jami): {g(d['norm'])} soat    ·    "
+                     f"Biriktirilgan: {g(d['jami'])} soat    ·    Bajarilish: {d['pct']:.0f}%",
+                     "",
+                     "O'qituvchi: ______________________________        Imzo: ______________",
+                     "",
+                     "Kafedra mudiri: ___________________________        Imzo: ______________",
+                     "",
+                     f"Sana: {time.strftime('%d.%m.%Y')}"]}
+        try:
+            write_pro_xlsx_multi(path, [sheet])
+            messagebox.showinfo("Tayyor", f"Shaxsiy varaqa saqlandi:\n{path}")
+        except OSError as e:
+            messagebox.showerror("Xato", str(e))
+
+    def export_full_xlsx(self):
+        """One workbook with all three reports as separate sheets."""
+        path = filedialog.asksaveasfilename(defaultextension=".xlsx",
+                                            filetypes=[("Excel", "*.xlsx")],
+                                            initialfile="toliq_hisobot.xlsx")
+        if not path:
+            return
+        try:
+            fan_ds = sorted(self._fan_report_rows(), key=lambda x: x["pct"], reverse=True)
+            yuk_ds = sorted(workload_rows(self.con), key=lambda x: x["pct"], reverse=True)
+            write_pro_xlsx_multi(path, [self._taq_sheet(self._taq_data()),
+                                        self._yukfan_sheet(fan_ds),
+                                        self._yuk_sheet(yuk_ds)])
+            messagebox.showinfo("Tayyor", f"To'liq hisobot saqlandi:\n{path}\n\n"
+                                "Faylda 3 ta varaq bor: Taqsimot, Yuklama - fanlar va "
+                                "Yuklama - o'qituvchilar.")
         except OSError as e:
             messagebox.showerror("Xato", str(e))
 
     def yuk_export(self):
+        ds = self._yuk_data()
         path = filedialog.asksaveasfilename(defaultextension=".csv",
                                             filetypes=[("CSV", "*.csv")], initialfile="yuklama_hisobot.csv")
         if not path:
@@ -1836,7 +2619,7 @@ class App(tk.Tk):
                 w = csv.writer(fh)
                 w.writerow(["FIO", "Stavka", "Meyor_jami", "Maruza", "Amaliyot", "Reyting",
                             "Jami_berilgan", "Farq", "Bajarilish_%", "Izoh"])
-                for d in workload_rows(self.con):
+                for d in ds:
                     izoh = (f"Meyordan ortiq (+{g(d['jami'] - d['norm'])} soat)"
                             if d["norm"] and d["jami"] > d["norm"] + 1e-9 else "")
                     w.writerow([d["fio"], g(d["stavka"]), g(d["norm"]), g(d["maruza"]), g(d["amaliyot"]),
@@ -1911,8 +2694,9 @@ class App(tk.Tk):
             ("h1", "1-qadam: O'qituvchilarni kiritish"),
             ("p", "Yuqoridan «Professor-O'qituvchilar» varag'ini tanlang."),
             ("b", "Bittalab kiritish uchun «+ Qo'shish» tugmasini bosing."),
-            ("b", "Ko'p bo'lsa: «Shablon» tugmasi bilan tayyor CSV namunasini yuklab oling, uni "
-                  "Excel'da to'ldiring (namuna qatorini o'chiring), so'ng «CSV import» orqali yuklang."),
+            ("b", "Ko'p bo'lsa: «Shablon» tugmasi bilan tayyor namunani yuklab oling, uni Excel'da "
+                  "to'ldiring (namuna qatorini o'chiring), so'ng «Import (Excel/CSV)» orqali yuklang — "
+                  ".xlsx faylni to'g'ridan-to'g'ri, CSV'ga o'girmasdan yuklash mumkin."),
             ("b", "Tahrirlash uchun qatorni ikki marta bosing yoki «Tahrirlash» tugmasini bosing. "
                   "O'chirish uchun qatorni tanlab «O'chirish»."),
 
@@ -1936,6 +2720,13 @@ class App(tk.Tk):
             ("b", "«Fan / yuklama» maydoniga yozib qidiring — masalan «ekon» deb yozsangiz, mos fanlar "
                   "chiqadi. So'ng ro'yxatdan tanlang yoki Enter bosing."),
             ("b", "«Soat» avtomatik to'ldiriladi; kerak bo'lsa o'zgartiring. So'ng «Saqlash»."),
+            ("b", "Professor tanlanganda o'ng yuqorida uning joriy yuklamasi ko'rinadi: "
+                  "«Joriy yuklama: 180/360 soat (50%) → 220/360 (61%)» — meyordan oshish "
+                  "saqlashdan oldinoq ko'rinib turadi (oshsa ⚠ belgisi chiqadi)."),
+            ("b", "«Tezkor taqsimlash» tugmasi — bitta fanning barcha potok/guruhlarini bir oynada "
+                  "bir nechta professorga birdaniga bo'lib chiqish: har bir professor qatorida nechta "
+                  "potok/guruh olishini kiritasiz (masalan 44 guruhni bir necha kishiga), «Tarqatish» "
+                  "bosilganda barcha yozuvlar birdaniga qo'shiladi. Oddiy bittalab qo'shish ham joyida."),
 
             ("h2", "Biriktirish qoidalari"),
             ("b", "Ma'ruza — jami soat = Ma'ruza × Potok. Har bir potok bitta o'qituvchi tomonidan to'liq "
@@ -1961,6 +2752,12 @@ class App(tk.Tk):
             ("b", "Meyordan ortiq yuklama — Taqsimotda biriktirish o'qituvchining meyor (jami)sidan oshsa, "
                   "ogohlantirish chiqadi, lekin yozuv baribir saqlanadi. Hisobotda bunday o'qituvchilar qizil "
                   "rangda va «Izoh» ustunida «⚠ Meyordan ortiq (+X soat)» belgisi bilan ko'rsatiladi."),
+            ("b", "«Shaxsiy varaqa (Excel)» — o'qituvchilar hisobotida qatorni tanlab bosing: o'sha "
+                  "o'qituvchining barcha fanlari, jami soatlari, bajarilishi va imzo joylari bilan "
+                  "chop etishga tayyor individual varaqa yaratiladi."),
+            ("b", "«⬇ To'liq hisobot» (yuqorida) — uchala jadval (Taqsimot, Yuklama-fanlar, "
+                  "Yuklama-o'qituvchilar) bitta Excel faylda alohida varaqlar sifatida. Har bir bo'limning "
+                  "alohida «Excel ga eksport» tugmasi ham ishlayveradi."),
             ("p", "«Professor-O'qituvchilar» varag'ida o'ng yuqorida «Jami meyor» — barcha o'qituvchilarning "
                   "umumiy me'yori ko'rsatiladi."),
 
@@ -1971,10 +2768,10 @@ class App(tk.Tk):
                   "yoki Ctrl+A (barchasini tanlaydi). So'ng «O'chirish» tugmasi bilan tanlangan barcha "
                   "qatorlarni bir vaqtda o'chirish mumkin. Taqsimotda ishlatilgan o'qituvchi/fanlar "
                   "o'chirilmaydi — ular ro'yxatda ko'rsatiladi, qolganlari o'chiriladi."),
-            ("b", "Ortga qaytarish — o'chirilgan yozuvlarni tiklash mumkin. Ctrl+Z eng oxirgi o'chirish "
-                  "amalini darhol qaytaradi. Yuqoridagi «↩ Ortga qaytarish» tugmasi esa barcha o'chirish "
-                  "amallari ro'yxatini ochadi — birdaniga o'chirilgan qatorlar (masalan 50 ta) bitta amal "
-                  "sifatida ko'rsatiladi va istalganini tanlab qaytarish mumkin. Ro'yxat dastur yopilguncha saqlanadi."),
+            ("b", "Ortga qaytarish — o'chirilgan VA tahrirlangan yozuvlarni tiklash mumkin. Ctrl+Z eng "
+                  "oxirgi amalni darhol qaytaradi. Yuqoridagi «↩ Qaytarish» tugmasi barcha amallar "
+                  "ro'yxatini ochadi — birdaniga o'chirilgan qatorlar (masalan 50 ta) bitta amal sifatida "
+                  "ko'rsatiladi va istalganini tanlab qaytarish mumkin. Ro'yxat dastur yopilguncha saqlanadi."),
             ("b", "Qidirish — har bir varaqdagi «Qidirish» maydoniga yozib, kerakli yozuvni tez toping. "
                   "Qidiruv barcha ustunlar bo'yicha ishlaydi: ID, F.I.Sh., fan nomi, yo'nalish, ta'lim turi, "
                   "til, semestr va h.k. Bir nechta so'z yozsangiz, hammasi mos kelgan qatorlar chiqadi "
@@ -1983,9 +2780,21 @@ class App(tk.Tk):
                   "bo'limlarida «Excel ga eksport» tugmasi tayyor professional .xlsx fayl beradi: rangli sarlavha, "
                   "har bir ustunda saralash va filtrlash tugmalari (AutoFilter), muzlatilgan sarlavha, chegarali "
                   "katakchalar, foizlar haqiqiy % katak sifatida. O'qituvchilar hisobotida meyordan ortiqlar "
-                  "qizil rangda chiqadi. Oddiy CSV eksport ham saqlanib qolgan."),
+                  "qizil rangda chiqadi. Oddiy CSV eksport ham saqlanib qolgan. Agar qidiruv filtri "
+                  "faol bo'lsa, dastur faqat ko'rinib turgan qatorlarni eksport qilishni taklif qiladi."),
+            ("b", "Tezkor tugmalar — Del: tanlangan qatorlarni o'chirish, Ctrl+N: yangi yozuv qo'shish, "
+                  "Ctrl+F: qidiruv maydoniga o'tish, F5: yangilash, Ctrl+Z: ortga qaytarish."),
             ("b", "Takror fanlar — bir xil fan ikki marta kiritilgan bo'lsa, «Takror tozalash» tugmasi ularni "
                   "tozalaydi. CSV import paytida takror fanlarning farqi (masalan reyting) avtomatik qavs ichida belgilanadi."),
+
+            ("h1", "Zaxira va o'quv yili arxivi"),
+            ("b", "Avto-zaxira — dastur har ochilganda bazaning nusxasi «backups» papkasiga avtomatik "
+                  "saqlanadi (oxirgi 15 tasi qoladi). «Zaxira va arxiv» tugmasi orqali istalgan nusxadan "
+                  "tiklash yoki qo'lda zaxira olish mumkin — tiklashdan oldin joriy holat ham avtomatik saqlanadi."),
+            ("b", "O'quv yili arxivi — yangi yil boshlanganda «Zaxira va arxiv → O'quv yili arxivi» "
+                  "bo'limida joriy ma'lumotni nom bilan (masalan «2026-2027») arxivlab, toza baza bilan "
+                  "davom etasiz (o'qituvchilar ro'yxatini saqlab qolish mumkin). Istalgan payt eski "
+                  "arxivga qaytib ko'rish ham mumkin."),
 
             ("h1", "Ma'lumotlar saqlanadimi? (Muhim)"),
             ("p", "Ha. Har bir o'zgarish darhol saqlanadi — alohida «saqlash» tugmasi kerak emas. Dasturni "
