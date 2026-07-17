@@ -2566,10 +2566,8 @@ class App(tk.Tk):
         ttk.Button(bar, text="+ Qo'shish", style="Primary.TButton", command=self.taq_add).pack(side="left")
         ttk.Button(bar, text="Tezkor taqsimlash", style="Secondary.TButton", command=self.taq_bulk).pack(side="left", padx=6)
         ttk.Button(bar, text="Ko'p fan biriktirish", style="Secondary.TButton", command=self.taq_multi).pack(side="left", padx=(0, 6))
-        ttk.Button(bar, text="Tahrirlash", style="Secondary.TButton", command=self.taq_edit).pack(side="left")
-        ttk.Button(bar, text="O'chirish", style="Danger.TButton", command=self.taq_del).pack(side="left", padx=6)
+        ttk.Button(bar, text="O'chirish", style="Danger.TButton", command=self.taq_del).pack(side="left")
         ttk.Button(bar, text="Excel ga eksport", style="Secondary.TButton", command=self.taq_export_xlsx).pack(side="left", padx=(16, 0))
-        ttk.Button(bar, text="CSV ga eksport", style="Secondary.TButton", command=self.taq_export).pack(side="left", padx=6)
         self.taq_q = tk.StringVar()
         self._add_search(bar, self.taq_q)
         self.taq_q.trace_add("write", lambda *_: self.load_taqsimot())
@@ -2577,7 +2575,7 @@ class App(tk.Tk):
         w = [50, 260, 280, 80, 70, 100, 70]
         self.t_taq = self._make_tree(body, cols, w,
                                      {"ID": "center", "Til": "center", "Semestr": "center", "Soat": "e"})
-        self.t_taq.bind("<Double-1>", lambda e: self.taq_edit())
+
 
     def load_taqsimot(self):
         q = (self.taq_q.get() if hasattr(self, "taq_q") else "").strip().lower()
@@ -2643,20 +2641,6 @@ class App(tk.Tk):
             self.con.commit()
             self.refresh_all()
             messagebox.showinfo("Tayyor", f"{len(res)} ta taqsimot yozuvi qo'shildi.")
-
-    def taq_edit(self):
-        i = self._selected_id(self.t_taq)
-        if i is None:
-            return
-        r = self.con.execute("SELECT * FROM Taqsimot WHERE TaqsimotID=?", (i,)).fetchone()
-        d = TaqsimotDialog(self, self.con, dict(r), editing_id=r["TaqsimotID"]).result
-        if d:
-            self._record_op("update", f"Tahrir: taqsimot yozuvi №{r['TaqsimotID']}",
-                            [("Taqsimot", dict(r))])
-            self.con.execute("UPDATE Taqsimot SET DomlaID=?,FanID=?,TurSoat=?,Soat=? WHERE TaqsimotID=?",
-                             (d["DomlaID"], d["FanID"], d["TurSoat"], d["Soat"], i))
-            self.con.commit()
-            self.refresh_all()
 
     def taq_del(self):
         ids = self._selected_ids(self.t_taq)
@@ -2731,30 +2715,11 @@ class App(tk.Tk):
         except OSError as e:
             messagebox.showerror("Xato", str(e))
 
-    def taq_export(self):
-        data = self._filtered_choice(self.taq_q.get(), self._taq_data(),
-                                     lambda d: self._taq_match(self.taq_q.get().strip().lower(), d))
-        path = filedialog.asksaveasfilename(defaultextension=".csv",
-                                            filetypes=[("CSV", "*.csv")], initialfile="taqsimot.csv")
-        if not path:
-            return
-        try:
-            with open(path, "w", newline="", encoding="utf-8-sig") as fh:
-                w = csv.writer(fh)
-                w.writerow(["Professor-o'qituvchi", "Fan", "Til", "Yonalish", "TalimTuri", "Semestr", "Turi", "Soat"])
-                for d in data:
-                    w.writerow([d["fio"], d["fan"], d["til"], d["yon"], d["talim"],
-                                g(d["sem"]), d["turi"], g(d["soat"])])
-            messagebox.showinfo("Tayyor", f"Taqsimot saqlandi:\n{path}")
-        except OSError as e:
-            messagebox.showerror("Xato", str(e))
-
     # ================= YUKLAMA (hisobot - fanlar) =================
     def _build_yukfan(self):
         _, bar, body = self._make_tab("  Yuklama (hisobot - fanlar)  ")
         ttk.Button(bar, text="Yangilash", style="Primary.TButton", command=self.load_yukfan).pack(side="left")
         ttk.Button(bar, text="Excel ga eksport", style="Secondary.TButton", command=self.yukfan_export_xlsx).pack(side="left", padx=8)
-        ttk.Button(bar, text="CSV ga eksport", style="Secondary.TButton", command=self.yukfan_export).pack(side="left")
         self.yukfan_q = tk.StringVar()
         self._add_search(bar, self.yukfan_q)
         self.yukfan_q.trace_add("write", lambda *_: self.load_yukfan())
@@ -2817,26 +2782,6 @@ class App(tk.Tk):
         self.yukfan_summary.set(f"Ko'rsatilgan: {shown}   |   Jami reja: {g(tot_jami)} soat   "
                                 f"|   Berilgan: {g(tot_ber)} soat   |   Qoldiq: {g(tot_jami - tot_ber)} soat")
 
-    def yukfan_export(self):
-        path = filedialog.asksaveasfilename(defaultextension=".csv",
-                                            filetypes=[("CSV", "*.csv")], initialfile="yuklama_fanlar_hisobot.csv")
-        if not path:
-            return
-        try:
-            with open(path, "w", newline="", encoding="utf-8-sig") as fh:
-                w = csv.writer(fh)
-                w.writerow(["FanID", "FanNomi", "Yonalish", "TalimTuri", "Til", "Semestr",
-                            "Maruza_jami", "Maruza_berilgan", "Amaliyot_jami", "Amaliyot_berilgan",
-                            "Reyting_jami", "Reyting_berilgan", "Jami", "Berilgan", "Qoldiq",
-                            "Bajarilish_%", "Oqituvchilar"])
-                for d in self._fan_report_rows():
-                    w.writerow([d["id"], d["nomi"], d["yon"], d["talim"], d["til"], g(d["sem"]),
-                                g(d["mj"]), g(d["mb"]), g(d["aj"]), g(d["ab"]), g(d["rj"]), g(d["rb"]),
-                                g(d["jami"]), g(d["berilgan"]), g(d["qoldiq"]), f"{d['pct']:.0f}", d["oqit"]])
-            messagebox.showinfo("Tayyor", f"Hisobot saqlandi:\n{path}")
-        except OSError as e:
-            messagebox.showerror("Xato", str(e))
-
     def _yukfan_match(self, q, d):
         return self._q_match(q, d["id"], d["nomi"], d["yon"], d["talim"],
                              d["til"], g(d["sem"]), d["oqit"])
@@ -2885,34 +2830,11 @@ class App(tk.Tk):
         except OSError as e:
             messagebox.showerror("Xato", str(e))
 
-    def yukfan_export(self):
-        ds = self._yukfan_data()
-        path = filedialog.asksaveasfilename(defaultextension=".csv",
-                                            filetypes=[("CSV", "*.csv")], initialfile="yuklama_fanlar_hisobot.csv")
-        if not path:
-            return
-        try:
-            with open(path, "w", newline="", encoding="utf-8-sig") as fh:
-                w = csv.writer(fh)
-                w.writerow(["FanID", "FanNomi", "Yonalish", "TalimTuri", "Til", "Semestr",
-                            "Maruza_jami", "Maruza_berilgan", "Amaliyot_jami", "Amaliyot_berilgan",
-                            "Reyting_jami", "Reyting_berilgan", "Jami", "Berilgan", "Qoldiq",
-                            "Bajarilish_%", "Oqituvchilar"])
-                for d in ds:
-                    w.writerow([d["id"], d["nomi"], d["yon"], d["talim"], d["til"], g(d["sem"]),
-                                g(d["mj"]), g(d["mb"]), g(d["aj"]), g(d["ab"]), g(d["rj"]), g(d["rb"]),
-                                g(d["jami"]), g(d["berilgan"]), g(d["qoldiq"]), f"{d['pct']:.0f}", d["oqit"]])
-            messagebox.showinfo("Tayyor", f"Hisobot saqlandi:\n{path}")
-        except OSError as e:
-            messagebox.showerror("Xato", str(e))
-
-    # ================= YUKLAMA (hisobot - o'qituvchi) =================
     def _build_yuklama(self):
         _, bar, body = self._make_tab("  Yuklama (hisobot - o'qituvchi)  ")
         ttk.Button(bar, text="Yangilash", style="Primary.TButton", command=self.load_yuklama).pack(side="left")
         ttk.Button(bar, text="Excel ga eksport", style="Secondary.TButton", command=self.yuk_export_xlsx).pack(side="left", padx=8)
         ttk.Button(bar, text="Shaxsiy varaqa (Excel)", style="Secondary.TButton", command=self.yuk_export_person).pack(side="left")
-        ttk.Button(bar, text="CSV ga eksport", style="Secondary.TButton", command=self.yuk_export).pack(side="left", padx=8)
         self.yuk_q = tk.StringVar()
         self._add_search(bar, self.yuk_q)
         self.yuk_q.trace_add("write", lambda *_: self.load_yuklama())
@@ -3069,26 +2991,6 @@ class App(tk.Tk):
         except OSError as e:
             messagebox.showerror("Xato", str(e))
 
-    def yuk_export(self):
-        ds = self._yuk_data()
-        path = filedialog.asksaveasfilename(defaultextension=".csv",
-                                            filetypes=[("CSV", "*.csv")], initialfile="yuklama_hisobot.csv")
-        if not path:
-            return
-        try:
-            with open(path, "w", newline="", encoding="utf-8-sig") as fh:
-                w = csv.writer(fh)
-                w.writerow(["FIO", "Stavka", "Meyor_jami", "Maruza", "Amaliyot", "Reyting",
-                            "Jami_berilgan", "Farq", "Bajarilish_%", "Izoh"])
-                for d in ds:
-                    izoh = (f"Meyordan ortiq (+{g(d['jami'] - d['norm'])} soat)"
-                            if d["norm"] and d["jami"] > d["norm"] + 1e-9 else "")
-                    w.writerow([d["fio"], g(d["stavka"]), g(d["norm"]), g(d["maruza"]), g(d["amaliyot"]),
-                                g(d["reyting"]), g(d["jami"]), g(d["diff"]), f"{d['pct']:.0f}", izoh])
-            messagebox.showinfo("Tayyor", f"Hisobot saqlandi:\n{path}")
-        except OSError as e:
-            messagebox.showerror("Xato", str(e))
-
     # ---------- refresh ----------
     def _on_tab(self):
         idx = self.nb.index(self.nb.select())
@@ -3186,7 +3088,9 @@ class App(tk.Tk):
             ("b", "Fanlar ro'yxati endi belgilash katakchali: bir nechta fanni (masalan 3-8 tasini) "
                   "✓ belgilab, BITTA «Saqlash» bilan barchasini birdaniga biriktirasiz. Potok/guruhli "
                   "fanlarda yonidagi sonni o'zgartirib nechta potok/guruh olishini kiritasiz; «Jami soat» "
-                  "avtomatik yig'ilib boradi. Tahrirlashda esa bitta yozuv tanlanadi."),
+                  "avtomatik yig'ilib boradi."),
+            ("b", "Taqsimot yozuvini o'zgartirish kerak bo'lsa: qatorni tanlab «O'chirish» va qaytadan "
+                  "qo'shing (o'chirilgan yozuvni Ctrl+Z bilan qaytarish ham mumkin)."),
             ("b", "Professor tanlanganda o'ng yuqorida uning joriy yuklamasi ko'rinadi: "
                   "«Joriy yuklama: 180/360 soat (50%) → 220/360 (61%)» — meyordan oshish "
                   "saqlashdan oldinoq ko'rinib turadi (oshsa ⚠ belgisi chiqadi)."),
@@ -3255,7 +3159,7 @@ class App(tk.Tk):
                   "bo'limlarida «Excel ga eksport» tugmasi tayyor professional .xlsx fayl beradi: rangli sarlavha, "
                   "har bir ustunda saralash va filtrlash tugmalari (AutoFilter), muzlatilgan sarlavha, chegarali "
                   "katakchalar, foizlar haqiqiy % katak sifatida. O'qituvchilar hisobotida meyordan ortiqlar "
-                  "qizil rangda chiqadi. Oddiy CSV eksport ham saqlanib qolgan. Agar qidiruv filtri "
+                  "qizil rangda chiqadi. Eksport faqat Excel (.xlsx) formatida. Agar qidiruv filtri "
                   "faol bo'lsa, dastur faqat ko'rinib turgan qatorlarni eksport qilishni taklif qiladi."),
             ("b", "Tezkor tugmalar — Del: tanlangan qatorlarni o'chirish, Ctrl+N: yangi yozuv qo'shish, "
                   "Ctrl+F: qidiruv maydoniga o'tish, F5: yangilash, Ctrl+Z: ortga qaytarish."),
