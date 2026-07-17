@@ -529,8 +529,8 @@ class TaqsimotDialog(tk.Toplevel):
         self.domlalar = con.execute(
             "SELECT DomlaID, FIO FROM Domlalar ORDER BY FIO COLLATE NOCASE").fetchall()
         self.fanlar = con.execute(
-            "SELECT FanID, FanNomi, Yonalish, TalimTuri, Semestr, Maruza, Amaliyot, Reyting, Potok, Guruh, Til "
-            "FROM Fanlar ORDER BY FanNomi COLLATE NOCASE").fetchall()
+            "SELECT FanID, FanNomi, Yonalish, TalimTuri, Kategoriya, Semestr, Maruza, Amaliyot, "
+            "Reyting, Potok, Guruh, Til FROM Fanlar ORDER BY FanNomi COLLATE NOCASE").fetchall()
         self.domla_ids = [r["DomlaID"] for r in self.domlalar]
         self.assigned_hours = self._load_assigned_hours()
         self.components = []              # parallel to cb_fan values
@@ -564,35 +564,39 @@ class TaqsimotDialog(tk.Toplevel):
         ttk.Label(frm, text="Til (o'qitish tili):").grid(row=4, column=2, sticky="w", **pad)
         self.cb_til = ttk.Combobox(frm, state="readonly", width=16, values=[ALL] + self._distinct("Til"))
         self.cb_til.grid(row=4, column=3, sticky="we", **pad)
+        ttk.Label(frm, text="Kategoriya:").grid(row=5, column=0, sticky="w", **pad)
+        self.cb_kat = ttk.Combobox(frm, state="readonly", width=10,
+                                   values=[ALL] + self._distinct_kat())
+        self.cb_kat.grid(row=5, column=1, sticky="w", **pad)
 
-        ttk.Label(frm, text="Fan / yuklama:").grid(row=5, column=0, sticky="w", **pad)
+        ttk.Label(frm, text="Fan / yuklama:").grid(row=6, column=0, sticky="w", **pad)
         self.cb_fan = ttk.Combobox(frm, width=54)        # editable: type to filter
-        self.cb_fan.grid(row=5, column=1, columnspan=3, sticky="we", **pad)
+        self.cb_fan.grid(row=6, column=1, columnspan=3, sticky="we", **pad)
         ttk.Label(frm, text="(yozib qidiring → tanlang yoki Enter; Ma'ruza/Amaliyot/Reyting alohida; biriktirilgani chiqadi)",
-                  foreground="#888").grid(row=6, column=1, columnspan=3, sticky="w", padx=6)
+                  foreground="#888").grid(row=7, column=1, columnspan=3, sticky="w", padx=6)
 
-        ttk.Label(frm, text="Soat (avtomatik):").grid(row=7, column=0, sticky="w", **pad)
+        ttk.Label(frm, text="Soat (avtomatik):").grid(row=8, column=0, sticky="w", **pad)
         self.var_soat = tk.StringVar()
         self.ent_soat = ttk.Entry(frm, textvariable=self.var_soat, width=12)
-        self.ent_soat.grid(row=7, column=1, sticky="w", **pad)
+        self.ent_soat.grid(row=8, column=1, sticky="w", **pad)
         self.var_unitlbl = tk.StringVar(value="Potok soni:")
-        ttk.Label(frm, textvariable=self.var_unitlbl).grid(row=7, column=2, sticky="e", **pad)
+        ttk.Label(frm, textvariable=self.var_unitlbl).grid(row=8, column=2, sticky="e", **pad)
         self.var_potok = tk.StringVar()
         self.sp_potok = ttk.Spinbox(frm, from_=1, to=1, textvariable=self.var_potok, width=6,
                                     state="disabled", command=self._on_potok)
-        self.sp_potok.grid(row=7, column=3, sticky="w", **pad)
+        self.sp_potok.grid(row=8, column=3, sticky="w", **pad)
         self.sp_potok.bind("<KeyRelease>", lambda e: self._on_potok())
         self.lbl_yuk = ttk.Label(frm, text="Yuklama: —", foreground=UI["brand_dark"], font=(FONT, 10, "bold"))
-        self.lbl_yuk.grid(row=8, column=0, columnspan=4, sticky="w", **pad)
+        self.lbl_yuk.grid(row=9, column=0, columnspan=4, sticky="w", **pad)
 
         btns = ttk.Frame(frm)
-        btns.grid(row=9, column=0, columnspan=4, sticky="we", pady=(14, 0))
+        btns.grid(row=10, column=0, columnspan=4, sticky="we", pady=(14, 0))
         ttk.Button(btns, text="Filtrni tozalash", style="Secondary.TButton", command=self._clear_filters).pack(side="left")
         ttk.Button(btns, text="Saqlash", style="Primary.TButton", command=self._save).pack(side="right")
         ttk.Button(btns, text="Bekor qilish", style="Secondary.TButton", command=self.destroy).pack(side="right", padx=(0, 8))
 
         self.cb_domla.bind("<<ComboboxSelected>>", lambda e: self._update_domla_info())
-        for cb in (self.cb_yon, self.cb_talim, self.cb_sem, self.cb_til):
+        for cb in (self.cb_yon, self.cb_talim, self.cb_sem, self.cb_til, self.cb_kat):
             cb.bind("<<ComboboxSelected>>", lambda e: self._refresh_fan())
         self.cb_fan.bind("<<ComboboxSelected>>", lambda e: self._on_fan())
         self.cb_fan.bind("<KeyRelease>", self._fan_type)
@@ -602,6 +606,7 @@ class TaqsimotDialog(tk.Toplevel):
         self.cb_talim.set(ALL)
         self.cb_sem.set(ALL)
         self.cb_til.set(ALL)
+        self.cb_kat.set(ALL)
         self._refresh_fan()
         if values:
             self._prefill(values)
@@ -647,6 +652,10 @@ class TaqsimotDialog(tk.Toplevel):
                 txt += f"  →  {g(cur + soat)} soat"
         self.lbl_dinfo.config(text=txt)
 
+    def _distinct_kat(self):
+        return sorted({g(int(r["Kategoriya"])) for r in self.fanlar
+                       if r["Kategoriya"] not in (None, "")})
+
     def _distinct(self, key):
         seen = []
         for r in self.fanlar:
@@ -671,11 +680,14 @@ class TaqsimotDialog(tk.Toplevel):
 
     def _match(self, r):
         y, t, s, l = self.cb_yon.get(), self.cb_talim.get(), self.cb_sem.get(), self.cb_til.get()
+        k = self.cb_kat.get()
         if y != ALL and (r["Yonalish"] or "") != y:
             return False
         if t != ALL and (r["TalimTuri"] or "") != t:
             return False
         if l != ALL and (r["Til"] or "").strip() != l:
+            return False
+        if k != ALL and (g(int(r["Kategoriya"])) if r["Kategoriya"] not in (None, "") else "") != k:
             return False
         if s != ALL:
             rsem = str(int(r["Semestr"])) if r["Semestr"] else ""
@@ -817,6 +829,7 @@ class TaqsimotDialog(tk.Toplevel):
         self.cb_talim.set(ALL)
         self.cb_sem.set(ALL)
         self.cb_til.set(ALL)
+        self.cb_kat.set(ALL)
         self._refresh_fan()
 
     def _prefill(self, v):
@@ -828,6 +841,7 @@ class TaqsimotDialog(tk.Toplevel):
             self.cb_talim.set(fan["TalimTuri"] or ALL)
             self.cb_sem.set(str(int(fan["Semestr"])) if fan["Semestr"] else ALL)
             self.cb_til.set((fan["Til"] or "").strip() or ALL)
+            self.cb_kat.set(g(int(fan["Kategoriya"])) if fan["Kategoriya"] not in (None, "") else ALL)
             self._refresh_fan()
             for idx, c in enumerate(self.components):
                 if c["FanID"] == v.get("FanID") and c["TurSoat"] == v.get("TurSoat"):
@@ -1116,6 +1130,318 @@ class BulkTaqsimotDialog(tk.Toplevel):
                 + "\\n".join(overs), parent=self)
         self.result = [(dom_id, c["FanID"], c["TurSoat"], n * c["unit"])
                        for dom_id, fio, n in counts]
+        self.destroy()
+
+
+# ===================== Multi-course (one professor) dialog =====================
+class MultiFanDialog(tk.Toplevel):
+    """Assign SEVERAL course components to ONE professor at once.
+    Filters (Yo'nalish, Ta'lim shakli, Semestr, Til, Kategoriya) narrow the list;
+    each matching component has a checkbox (+ unit spinbox for potok/guruh).
+    A live counter shows hours picked vs the professor's meyor jami and how many
+    hours remain; exceeding the norm turns it red and triggers a warning on save
+    (records are still saved — same policy as the rest of the app)."""
+
+    def __init__(self, master, con):
+        super().__init__(master)
+        self.title("Ko'p fan biriktirish — bitta o'qituvchiga")
+        self.resizable(False, True)
+        self.con = con
+        self.result = None                     # list of (DomlaID, FanID, TurSoat, Soat)
+        self.picked = {}                       # (FanID, TurSoat) -> units (kept across filters)
+
+        self.domlalar = con.execute(
+            "SELECT * FROM Domlalar ORDER BY FIO COLLATE NOCASE").fetchall()
+        self.fanlar = con.execute("SELECT * FROM Fanlar ORDER BY FanNomi COLLATE NOCASE").fetchall()
+        self.assigned = {(r["FanID"], r["TurSoat"]): r["s"] for r in con.execute(
+            "SELECT FanID, TurSoat, COALESCE(SUM(Soat),0) s FROM Taqsimot GROUP BY FanID, TurSoat")}
+        self.dom_load = {r["DomlaID"]: r["s"] for r in con.execute(
+            "SELECT DomlaID, COALESCE(SUM(Soat),0) s FROM Taqsimot GROUP BY DomlaID")}
+
+        frm = ttk.Frame(self, padding=(20, 16))
+        frm.pack(fill="both", expand=True)
+        ttk.Label(frm, text="KO'P FAN BIRIKTIRISH", style="Heading.TLabel").grid(
+            row=0, column=0, columnspan=4, sticky="w")
+        ttk.Label(frm, text="Bitta professorga bir nechta fanni birdaniga biriktiring — "
+                            "meyor (jami) soatiga yetguncha.",
+                  style="Muted.TLabel").grid(row=1, column=0, columnspan=4, sticky="w", pady=(2, 8))
+
+        pad = {"padx": 6, "pady": 3}
+        ttk.Label(frm, text="Professor-o'qituvchi:").grid(row=2, column=0, sticky="w", **pad)
+        self.domla_ids = [d["DomlaID"] for d in self.domlalar]
+        self.cb_domla = ttk.Combobox(frm, state="readonly", width=44,
+                                     values=[self._dom_label(d) for d in self.domlalar])
+        self.cb_domla.grid(row=2, column=1, columnspan=3, sticky="we", **pad)
+        self.cb_domla.bind("<<ComboboxSelected>>", lambda e: self._update_counter())
+
+        ttk.Label(frm, text="Yo'nalish:").grid(row=3, column=0, sticky="w", **pad)
+        self.cb_yon = ttk.Combobox(frm, state="readonly", width=20,
+                                   values=[ALL] + sorted({(r["Yonalish"] or "").strip()
+                                                          for r in self.fanlar if (r["Yonalish"] or "").strip()}))
+        self.cb_yon.grid(row=3, column=1, sticky="we", **pad)
+        ttk.Label(frm, text="Ta'lim shakli:").grid(row=3, column=2, sticky="w", **pad)
+        self.cb_talim = ttk.Combobox(frm, state="readonly", width=14, values=[ALL] + TALIM_TURI)
+        self.cb_talim.grid(row=3, column=3, sticky="we", **pad)
+        ttk.Label(frm, text="Semestr:").grid(row=4, column=0, sticky="w", **pad)
+        self.cb_sem = ttk.Combobox(frm, state="readonly", width=8,
+                                   values=[ALL] + sorted({str(int(r["Semestr"])) for r in self.fanlar
+                                                          if r["Semestr"]}, key=lambda x: int(x)))
+        self.cb_sem.grid(row=4, column=1, sticky="w", **pad)
+        ttk.Label(frm, text="Til:").grid(row=4, column=2, sticky="w", **pad)
+        self.cb_til = ttk.Combobox(frm, state="readonly", width=14,
+                                   values=[ALL] + sorted({(r["Til"] or "").strip()
+                                                          for r in self.fanlar if (r["Til"] or "").strip()}))
+        self.cb_til.grid(row=4, column=3, sticky="we", **pad)
+        ttk.Label(frm, text="Kategoriya:").grid(row=5, column=0, sticky="w", **pad)
+        self.cb_kat = ttk.Combobox(frm, state="readonly", width=8,
+                                   values=[ALL] + sorted({g(int(r["Kategoriya"])) for r in self.fanlar
+                                                          if r["Kategoriya"] not in (None, "")}))
+        self.cb_kat.grid(row=5, column=1, sticky="w", **pad)
+        ttk.Button(frm, text="Filtrni tozalash", style="Secondary.TButton",
+                   command=self._clear_filters).grid(row=5, column=3, sticky="e", **pad)
+        for cb in (self.cb_yon, self.cb_talim, self.cb_sem, self.cb_til, self.cb_kat):
+            cb.set(ALL)
+            cb.bind("<<ComboboxSelected>>", lambda e: self._rebuild_list())
+
+        wrap = tk.Frame(frm, background=UI["surface"], highlightthickness=1,
+                        highlightbackground=UI["border"], bd=0)
+        wrap.grid(row=6, column=0, columnspan=4, sticky="nsew", pady=(8, 0))
+        self.canvas = tk.Canvas(wrap, background=UI["surface"], highlightthickness=0,
+                                width=660, height=280)
+        vs = ttk.Scrollbar(wrap, orient="vertical", command=self.canvas.yview)
+        self.canvas.configure(yscrollcommand=vs.set)
+        vs.pack(side="right", fill="y")
+        self.canvas.pack(side="left", fill="both", expand=True)
+        self.inner = ttk.Frame(self.canvas, style="Card.TFrame")
+        self.canvas.create_window((0, 0), window=self.inner, anchor="nw")
+        self.inner.bind("<Configure>",
+                        lambda e: self.canvas.configure(scrollregion=self.canvas.bbox("all")))
+        self.canvas.bind_all("<MouseWheel>",
+                             lambda e: self.canvas.yview_scroll(int(-e.delta / 120), "units"))
+
+        self.lbl_count = ttk.Label(frm, text="", font=(FONT, 10, "bold"))
+        self.lbl_count.grid(row=7, column=0, columnspan=4, sticky="w", pady=(8, 0))
+        btns = ttk.Frame(frm)
+        btns.grid(row=8, column=0, columnspan=4, sticky="we", pady=(10, 0))
+        ttk.Button(btns, text="Biriktirish (saqlash)", style="Primary.TButton",
+                   command=self._save).pack(side="right")
+        ttk.Button(btns, text="Bekor qilish", style="Secondary.TButton",
+                   command=self.destroy).pack(side="right", padx=(0, 8))
+
+        self.rows = []                          # visible rows: (comp, chk_var, spin_var)
+        self._rebuild_list()
+        if self.domlalar:
+            self.cb_domla.current(0)
+        self._update_counter()
+
+        self.transient(master)
+        self.grab_set()
+        self.bind("<Escape>", lambda e: self.destroy())
+        self.update_idletasks()
+        self.geometry(f"+{master.winfo_rootx() + 40}+{master.winfo_rooty() + 30}")
+        self.wait_window(self)
+
+    # ----- data -----
+    @staticmethod
+    def _dom_label(d):
+        norm = meyor_jami(d["Meyor1St"], d["Stavka"])
+        return f'{short_name(d["FIO"])} — meyor: {g(norm)} soat'
+
+    def _components(self):
+        """All course components with remaining hours. Maruza/Amaliyot keep the
+        indivisible potok/guruh rule; Reyting (Masofaviy) is take-all-remaining."""
+        comps = []
+        for r in self.fanlar:
+            if not self._match(r):
+                continue
+            specs = [("Maruza", r["Maruza"] or 0, r["Potok"] or 1),
+                     ("Amaliyot", r["Amaliyot"] or 0, r["Guruh"] or 1)]
+            for turi, unit, count in specs:
+                total = unit * count
+                if unit <= 0 or total <= 0:
+                    continue
+                left_h = total - self.assigned.get((r["FanID"], turi), 0)
+                units_left = int(round(left_h / unit)) if unit else 0
+                if units_left >= 1:
+                    comps.append({"row": r, "FanID": r["FanID"], "TurSoat": turi,
+                                  "unit": unit, "left": units_left, "remaining": left_h})
+            if (r["TalimTuri"] or "") == "Masofaviy" and (r["Reyting"] or 0) > 0:
+                left_h = (r["Reyting"] or 0) - self.assigned.get((r["FanID"], "Reyting"), 0)
+                if left_h > 0:
+                    comps.append({"row": r, "FanID": r["FanID"], "TurSoat": "Reyting",
+                                  "unit": left_h, "left": 1, "remaining": left_h})
+        return comps
+
+    def _match(self, r):
+        if self.cb_yon.get() != ALL and (r["Yonalish"] or "").strip() != self.cb_yon.get():
+            return False
+        if self.cb_talim.get() != ALL and (r["TalimTuri"] or "") != self.cb_talim.get():
+            return False
+        if self.cb_til.get() != ALL and (r["Til"] or "").strip() != self.cb_til.get():
+            return False
+        if self.cb_kat.get() != ALL:
+            k = g(int(r["Kategoriya"])) if r["Kategoriya"] not in (None, "") else ""
+            if k != self.cb_kat.get():
+                return False
+        if self.cb_sem.get() != ALL:
+            rsem = str(int(r["Semestr"])) if r["Semestr"] else ""
+            if rsem != self.cb_sem.get():
+                return False
+        return True
+
+    def _clear_filters(self):
+        for cb in (self.cb_yon, self.cb_talim, self.cb_sem, self.cb_til, self.cb_kat):
+            cb.set(ALL)
+        self._rebuild_list()
+
+    # ----- list building -----
+    def _comp_text(self, c):
+        r = c["row"]
+        til = (r["Til"] or "").strip()
+        name = f'{r["FanNomi"]} ({til.lower()})' if til else r["FanNomi"]
+        kat = f' · {g(int(r["Kategoriya"]))}-kat' if r["Kategoriya"] not in (None, "") else ""
+        extra = " · ".join(x for x in ((r["TalimTuri"] or ""),
+                                       f'{int(r["Semestr"])}-sem' if r["Semestr"] else "") if x)
+        if c["TurSoat"] == "Reyting":
+            qty = f'qoldi {g(c["remaining"])} soat'
+        else:
+            word = "potok" if c["TurSoat"] == "Maruza" else "guruh"
+            qty = f'qoldi {c["left"]} {word} × {g(c["unit"])} soat'
+        return f'{name} — {c["TurSoat"]}: {qty} · {extra}{kat}'
+
+    def _rebuild_list(self):
+        for w in self.inner.winfo_children():
+            w.destroy()
+        self.rows = []
+        comps = self._components()
+        if not comps:
+            ttk.Label(self.inner, text="Filtrga mos, taqsimlanmagan fan topilmadi.",
+                      background=UI["surface"], foreground=UI["muted"]).grid(
+                row=0, column=0, padx=10, pady=10, sticky="w")
+        for i, c in enumerate(comps):
+            key = (c["FanID"], c["TurSoat"])
+            chk = tk.IntVar(value=1 if self.picked.get(key, 0) > 0 else 0)
+            sv = tk.StringVar(value=g(self.picked.get(key, 0) or c["left"]))
+            row = ttk.Frame(self.inner, style="Card.TFrame")
+            row.grid(row=i, column=0, sticky="w", padx=6, pady=1)
+            cbx = tk.Checkbutton(row, variable=chk, background=UI["surface"],
+                                 activebackground=UI["surface"],
+                                 command=lambda k=key, v=chk, s=sv: self._on_check(k, v, s))
+            cbx.pack(side="left")
+            ttk.Label(row, text=self._comp_text(c), background=UI["surface"],
+                      wraplength=470, justify="left").pack(side="left")
+            sp = ttk.Spinbox(row, from_=1, to=c["left"], textvariable=sv, width=5,
+                             command=lambda k=key, v=chk, s=sv: self._on_spin(k, v, s))
+            if c["TurSoat"] != "Reyting" and c["left"] > 1:
+                sp.pack(side="left", padx=(8, 0))
+                word = "potok" if c["TurSoat"] == "Maruza" else "guruh"
+                ttk.Label(row, text=word, background=UI["surface"],
+                          foreground=UI["muted"]).pack(side="left", padx=(4, 0))
+                sp.bind("<KeyRelease>", lambda e, k=key, v=chk, s=sv: self._on_spin(k, v, s))
+            self.rows.append((c, chk, sv))
+        self._update_counter()
+
+    def _on_check(self, key, chk, sv):
+        if chk.get():
+            try:
+                n = max(1, int(float(sv.get() or 1)))
+            except ValueError:
+                n = 1
+            self.picked[key] = n
+        else:
+            self.picked.pop(key, None)
+        self._update_counter()
+
+    def _on_spin(self, key, chk, sv):
+        if not chk.get():
+            return
+        try:
+            n = int(float(sv.get().strip() or 0))
+        except ValueError:
+            return
+        comp = next((c for c, _, _ in self.rows if (c["FanID"], c["TurSoat"]) == key), None)
+        if comp:
+            n = max(1, min(n, comp["left"]))
+        self.picked[key] = n
+        self._update_counter()
+
+    # ----- totals -----
+    def _picked_hours(self):
+        """Total hours over ALL picked components (also ones hidden by filters)."""
+        total = 0
+        by_key = {}
+        for r in self.fanlar:
+            for turi, unit, count in (("Maruza", r["Maruza"] or 0, r["Potok"] or 1),
+                                      ("Amaliyot", r["Amaliyot"] or 0, r["Guruh"] or 1)):
+                by_key[(r["FanID"], turi)] = unit
+            by_key[(r["FanID"], "Reyting")] = ((r["Reyting"] or 0)
+                                               - self.assigned.get((r["FanID"], "Reyting"), 0))
+        for (fid, turi), n in self.picked.items():
+            total += n * by_key.get((fid, turi), 0)
+        return total
+
+    def _update_counter(self):
+        di = self.cb_domla.current()
+        picked_h = self._picked_hours()
+        n_comp = len(self.picked)
+        if di < 0:
+            self.lbl_count.config(foreground=UI["ink"],
+                                  text=f"Tanlandi: {n_comp} ta fan · {g(picked_h)} soat")
+            return
+        d = self.domlalar[di]
+        norm = meyor_jami(d["Meyor1St"], d["Stavka"])
+        cur = self.dom_load.get(d["DomlaID"], 0)
+        new_t = cur + picked_h
+        if norm:
+            left = norm - new_t
+            if left < -1e-9:
+                self.lbl_count.config(foreground=UI["danger_dark"],
+                    text=f"Tanlandi: {n_comp} ta fan · {g(picked_h)} soat  |  "
+                         f"Yuklama: {g(cur)} + {g(picked_h)} = {g(new_t)}/{g(norm)} soat — "
+                         f"meyordan {g(-left)} soat OSHDI ⚠")
+            else:
+                self.lbl_count.config(foreground=UI["brand_dark"],
+                    text=f"Tanlandi: {n_comp} ta fan · {g(picked_h)} soat  |  "
+                         f"Yuklama: {g(cur)} + {g(picked_h)} = {g(new_t)}/{g(norm)} soat · "
+                         f"qoladi: {g(left)} soat")
+        else:
+            self.lbl_count.config(foreground=UI["ink"],
+                text=f"Tanlandi: {n_comp} ta fan · {g(picked_h)} soat · jami: {g(new_t)} soat "
+                     f"(meyor kiritilmagan)")
+
+    # ----- save -----
+    def _save(self):
+        di = self.cb_domla.current()
+        if di < 0:
+            messagebox.showerror("Xato", "Professor-o'qituvchi tanlanmagan.", parent=self)
+            return
+        if not self.picked:
+            messagebox.showerror("Xato", "Hech qanday fan tanlanmadi.", parent=self)
+            return
+        d = self.domlalar[di]
+        unit_by_key = {}
+        for r in self.fanlar:
+            unit_by_key[(r["FanID"], "Maruza")] = r["Maruza"] or 0
+            unit_by_key[(r["FanID"], "Amaliyot")] = r["Amaliyot"] or 0
+            unit_by_key[(r["FanID"], "Reyting")] = ((r["Reyting"] or 0)
+                                                    - self.assigned.get((r["FanID"], "Reyting"), 0))
+        items = [(d["DomlaID"], fid, turi, n * unit_by_key.get((fid, turi), 0))
+                 for (fid, turi), n in self.picked.items()
+                 if n * unit_by_key.get((fid, turi), 0) > 0]
+        total = sum(s for *_x, s in items)
+        norm = meyor_jami(d["Meyor1St"], d["Stavka"])
+        cur = self.dom_load.get(d["DomlaID"], 0)
+        if not messagebox.askyesno("Tasdiqlang",
+                f"{short_name(d['FIO'])} ga {len(items)} ta fan komponenti "
+                f"(jami {g(total)} soat) biriktirilsinmi?", parent=self):
+            return
+        if norm and cur + total > norm + 1e-9:
+            messagebox.showwarning("Meyordan ortiq",
+                f"Diqqat: {short_name(d['FIO'])} yuklamasi {g(cur + total)}/{g(norm)} soat "
+                f"bo'ladi — meyordan {g(cur + total - norm)} soat ortiq "
+                f"({(cur + total) / norm * 100:.0f}%).\n\nYozuvlar baribir saqlanadi.",
+                parent=self)
+        self.result = items
         self.destroy()
 
 
@@ -2121,6 +2447,7 @@ class App(tk.Tk):
         _, bar, body = self._make_tab("  Taqsimot  ")
         ttk.Button(bar, text="+ Qo'shish", style="Primary.TButton", command=self.taq_add).pack(side="left")
         ttk.Button(bar, text="Tezkor taqsimlash", style="Secondary.TButton", command=self.taq_bulk).pack(side="left", padx=6)
+        ttk.Button(bar, text="Ko'p fan biriktirish", style="Secondary.TButton", command=self.taq_multi).pack(side="left", padx=(0, 6))
         ttk.Button(bar, text="Tahrirlash", style="Secondary.TButton", command=self.taq_edit).pack(side="left")
         ttk.Button(bar, text="O'chirish", style="Danger.TButton", command=self.taq_del).pack(side="left", padx=6)
         ttk.Button(bar, text="Excel ga eksport", style="Secondary.TButton", command=self.taq_export_xlsx).pack(side="left", padx=(16, 0))
@@ -2177,6 +2504,18 @@ class App(tk.Tk):
         if not self._has_base_data():
             return
         res = BulkTaqsimotDialog(self, self.con).result
+        if res:
+            self.con.executemany("INSERT INTO Taqsimot(DomlaID,FanID,TurSoat,Soat) VALUES(?,?,?,?)", res)
+            self.con.commit()
+            self.refresh_all()
+            messagebox.showinfo("Tayyor", f"{len(res)} ta taqsimot yozuvi qo'shildi.")
+
+    def taq_multi(self):
+        """Assign several courses to one professor at once, with Til/Kategoriya
+        and other filters, live remaining-hours counter and over-norm warning."""
+        if not self._has_base_data():
+            return
+        res = MultiFanDialog(self, self.con).result
         if res:
             self.con.executemany("INSERT INTO Taqsimot(DomlaID,FanID,TurSoat,Soat) VALUES(?,?,?,?)", res)
             self.con.commit()
@@ -2723,6 +3062,14 @@ class App(tk.Tk):
             ("b", "Professor tanlanganda o'ng yuqorida uning joriy yuklamasi ko'rinadi: "
                   "«Joriy yuklama: 180/360 soat (50%) → 220/360 (61%)» — meyordan oshish "
                   "saqlashdan oldinoq ko'rinib turadi (oshsa ⚠ belgisi chiqadi)."),
+            ("b", "«Ko'p fan biriktirish» tugmasi — BITTA professorga bir nechta fanni birdaniga "
+                  "biriktirish. Til, Kategoriya (1/2), yo'nalish, ta'lim shakli va semestr bo'yicha "
+                  "filtrlab (masalan Til: rus, Kategoriya: 2), mos fanlarni belgilaysiz — pastda jonli "
+                  "hisoblagich «Yuklama: 180 + 120 = 300/360 soat · qoladi: 60 soat» ko'rsatib boradi. "
+                  "Meyordan oshsa qizil ⚠ chiqadi va saqlashda ogohlantiradi (yozuvlar baribir saqlanadi). "
+                  "Potok/guruhli fanlarda nechta potok/guruh olishini ham kiritish mumkin."),
+            ("b", "Taqsimot oynasidagi filtrlarga «Kategoriya» (1/2) ham qo'shildi — til va boshqa "
+                  "filtrlar qatorida fan kategoriyasi bo'yicha ham saralash mumkin."),
             ("b", "«Tezkor taqsimlash» tugmasi — bitta fanning barcha potok/guruhlarini bir oynada "
                   "bir nechta professorga birdaniga bo'lib chiqish: har bir professor qatorida nechta "
                   "potok/guruh olishini kiritasiz (masalan 44 guruhni bir necha kishiga), «Tarqatish» "
