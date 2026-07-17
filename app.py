@@ -584,8 +584,13 @@ class TaqsimotDialog(tk.Toplevel):
         e_search.bind("<KeyRelease>", lambda e: self._refresh_list(keep_scroll=True))
         hint = ("(yozib qidiring; bir nechta fanni ✓ belgilab birdaniga saqlash mumkin)"
                 if not editing_id else "(yozib qidiring; tahrirlashda bitta yozuv tanlanadi)")
-        ttk.Label(frm, text=hint, foreground="#888").grid(row=7, column=1, columnspan=3,
+        ttk.Label(frm, text=hint, foreground="#888").grid(row=7, column=1, columnspan=2,
                                                           sticky="w", padx=6)
+        self.var_all = tk.IntVar(value=0)
+        if not editing_id:
+            tk.Checkbutton(frm, text="Hammasini tanlash", variable=self.var_all,
+                           background=UI["bg"], activebackground=UI["bg"],
+                           command=self._toggle_all).grid(row=7, column=3, sticky="e", padx=6)
 
         wrap = tk.Frame(frm, background=UI["surface"], highlightthickness=1,
                         highlightbackground=UI["border"], bd=0)
@@ -816,6 +821,21 @@ class TaqsimotDialog(tk.Toplevel):
         if not keep_scroll:
             self.canvas.yview_moveto(0)
         self._update_total()
+        self._sync_master()
+
+    def _toggle_all(self):
+        """Tick / untick every course currently visible in the (filtered) list."""
+        want = bool(self.var_all.get())
+        for c, chk, sv, kind in self.rows:
+            if bool(chk.get()) != want:
+                chk.set(1 if want else 0)
+                self._on_check(c, chk)
+        self._sync_master()
+
+    def _sync_master(self):
+        if self.editing_id:
+            return
+        self.var_all.set(1 if self.rows and all(chk.get() for _, chk, _, _ in self.rows) else 0)
 
     def _on_check(self, c, chk):
         key = (c["FanID"], c["TurSoat"])
@@ -845,6 +865,7 @@ class TaqsimotDialog(tk.Toplevel):
         else:
             self.picked.pop(key, None)
         self._update_total()
+        self._sync_master()
 
     def _on_units(self, c, chk, sv):
         if not chk.get():
@@ -1275,6 +1296,10 @@ class MultiFanDialog(tk.Toplevel):
                                    values=[ALL] + sorted({g(int(r["Kategoriya"])) for r in self.fanlar
                                                           if r["Kategoriya"] not in (None, "")}))
         self.cb_kat.grid(row=5, column=1, sticky="w", **pad)
+        self.var_all = tk.IntVar(value=0)
+        tk.Checkbutton(frm, text="Hammasini tanlash", variable=self.var_all,
+                       background=UI["bg"], activebackground=UI["bg"],
+                       command=self._toggle_all).grid(row=5, column=2, sticky="e", **pad)
         ttk.Button(frm, text="Filtrni tozalash", style="Secondary.TButton",
                    command=self._clear_filters).grid(row=5, column=3, sticky="e", **pad)
         for cb in (self.cb_yon, self.cb_talim, self.cb_sem, self.cb_til, self.cb_kat):
@@ -1418,6 +1443,20 @@ class MultiFanDialog(tk.Toplevel):
                 sp.bind("<KeyRelease>", lambda e, k=key, v=chk, s=sv: self._on_spin(k, v, s))
             self.rows.append((c, chk, sv))
         self._update_counter()
+        self._sync_master()
+
+    def _toggle_all(self):
+        """Tick / untick every course currently visible in the (filtered) list."""
+        want = bool(self.var_all.get())
+        for c, chk, sv in self.rows:
+            key = (c["FanID"], c["TurSoat"])
+            if bool(chk.get()) != want:
+                chk.set(1 if want else 0)
+                self._on_check(key, chk, sv)
+        self._sync_master()
+
+    def _sync_master(self):
+        self.var_all.set(1 if self.rows and all(chk.get() for _, chk, _ in self.rows) else 0)
 
     def _on_check(self, key, chk, sv):
         if chk.get():
@@ -1429,6 +1468,7 @@ class MultiFanDialog(tk.Toplevel):
         else:
             self.picked.pop(key, None)
         self._update_counter()
+        self._sync_master()
 
     def _on_spin(self, key, chk, sv):
         if not chk.get():
@@ -3140,6 +3180,9 @@ class App(tk.Tk):
             ("b", "Kerak bo'lsa, yo'nalish / ta'lim shakli / semestr / til filtrlari bilan ro'yxatni qisqartiring."),
             ("b", "«Fan / yuklama» maydoniga yozib qidiring — masalan «ekon» deb yozsangiz, mos fanlar "
                   "chiqadi. So'ng ro'yxatdan tanlang yoki Enter bosing."),
+            ("b", "«Hammasini tanlash» katakchasi — ro'yxatda ko'rinib turgan barcha fanlarni bir "
+                  "bosishda belgilaydi (qayta bosilsa — bekor qiladi). Filtr yoki qidiruv bilan "
+                  "ro'yxatni toraytirib, keyin hammasini tanlash ayniqsa qulay."),
             ("b", "Fanlar ro'yxati endi belgilash katakchali: bir nechta fanni (masalan 3-8 tasini) "
                   "✓ belgilab, BITTA «Saqlash» bilan barchasini birdaniga biriktirasiz. Potok/guruhli "
                   "fanlarda yonidagi sonni o'zgartirib nechta potok/guruh olishini kiritasiz; «Jami soat» "
